@@ -106,7 +106,3 @@ Access the interactive API documentation at:
 ## License
 
 Apache License 2.0 - See LICENSE file for details.
-
-## Contact
-
-For support: user@contact.com
