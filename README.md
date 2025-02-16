@@ -1,4 +1,4 @@
-# ICEX Document Processing System
+# Auditing Document Processing System
 
 A scalable document processing system for financial documents using FastAPI, PostgreSQL, and AI-powered analysis.
 
