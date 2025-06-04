@@ -1,0 +1,27 @@
+Initialize VM:
+
+```cmd
+scp C:\Users\Sergio\GT\PagosICEX\backend\.py Username@VMIP:
+ssh Username@VMIP
+```
+
+Pre-Training in cuda=12.1:
+
+```ssh
+pip uninstall torch torchvision -y
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+python main.py
+```
+
+After training, save most relevant files:
+
+```ssh
+cd model_name
+tar -czvf model_relevant_files.tar.gz adapter_model.safetensors adapter_config.json tokenizer.json tokenizer_config.json vocab.json merges.txt
+```
+
+Transfer the Compressed File to Your Local Machine:
+
+```cmd
+scp Username@VMIP:/home/Ubuntu/model_name/model_relevant_files.tar.gz "local/path/"
+```

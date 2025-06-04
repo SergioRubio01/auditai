@@ -73,7 +73,7 @@ RETRY_DELAY = 1  # seconds
 
 # Add these constants near other constants
 RATE_LIMIT_WINDOW = 60  # 1 minute window
-BASE_RATE_LIMIT = 1000  # requests per minute
+BASE_RATE_LIMIT = 50000  # requests per minute
 MAX_BACKOFF = 3600  # maximum backoff in seconds
 
 # Initialize PDF converter
@@ -229,6 +229,7 @@ def init_db():
                     liquido_a_percibir TEXT,
                     a_abonar TEXT,
                     total_cuota_empresarial TEXT,
+                    comments TEXT,
                     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -259,8 +260,6 @@ def init_db():
             CREATE TABLE IF NOT EXISTS nominas_tabla (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 descripcion TEXT,
-                importe_unidad TEXT,
-                unidad TEXT,
                 devengos TEXT,
                 deducciones TEXT,
                 id_documento TEXT,
@@ -317,6 +316,10 @@ def init_db():
         
         conn.commit()
 
+@app.get("/health")
+def health_check():
+    return JSONResponse(content={"status": "ok"})
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize database and process pool on startup with retry logic"""
@@ -326,13 +329,10 @@ async def startup_event():
     for attempt in range(MAX_RETRIES):
         try:
             process_pool = ProcessPoolExecutor(max_workers=MAX_WORKERS)
-            logger.info(f"Process pool initialized with {MAX_WORKERS} workers")
             break
         except Exception as e:
             if attempt == MAX_RETRIES - 1:
-                logger.error(f"Failed to initialize process pool after {MAX_RETRIES} attempts: {e}")
                 raise
-            logger.warning(f"Process pool initialization attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(RETRY_DELAY)
 
 @app.on_event("shutdown")
@@ -384,7 +384,6 @@ async def create_transferencia(transferencia: Transferencia):
             )
             
     except Exception as e:
-        logger.error(f"Error creating transferencia: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/transferencias/", response_model=List[Transferencia])
@@ -425,7 +424,6 @@ async def get_transferencias(tipo_documento: Optional[str] = None):
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching transferencias: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/tarjetas/", response_model=Tarjeta)
@@ -462,7 +460,6 @@ async def create_tarjeta(tarjeta: Tarjeta):
             return Tarjeta(rows=inserted_rows)
             
     except Exception as e:
-        logger.error(f"Error creating tarjeta entries: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/tarjetas/", response_model=List[Tarjeta])
@@ -502,7 +499,6 @@ async def get_tarjetas(tipo_documento: Optional[str] = None):
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching tarjetas: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/pagos_tabla/")
@@ -531,7 +527,6 @@ async def get_pagos_tabla():
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching pagos tabla: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/facturas/", response_model=FacturaRow)
@@ -587,7 +582,6 @@ async def create_factura(factura: FacturaRow):
             )
             
     except Exception as e:
-        logger.error(f"Error creating factura: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/facturas/", response_model=List[FacturaRow])
@@ -624,7 +618,6 @@ async def get_facturas():
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching facturas: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/facturas_tabla/")
@@ -653,13 +646,15 @@ async def get_facturas_tabla():
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching facturas tabla: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.post("/nominas/", response_model=NominaRow)
 async def create_nomina(nomina: NominaRow):
     """Create a new nomina in the database"""
     try:
+        # Check if CIF was corrected by validate_and_extract_cif
+        original_cif = nomina.CIF
+        
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -667,8 +662,8 @@ async def create_nomina(nomina: NominaRow):
                 (id_documento, mes, fecha_inicio, fecha_fin, cif, trabajador, naf, nif, categoria, antiguedad, 
                 contrato, total_devengos, total_deducciones, absentismos, bc_teorica, prorrata, bc_con_complementos, 
                 total_seg_social, bonificaciones_ss_trabajador, total_retenciones, total_retenciones_ss, 
-                liquido_a_percibir, a_abonar, total_cuota_empresarial)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                liquido_a_percibir, a_abonar, total_cuota_empresarial, comments)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 nomina.ID_DOCUMENTO,
                 nomina.MES,
@@ -693,7 +688,8 @@ async def create_nomina(nomina: NominaRow):
                 nomina.TOTAL_RETENCIONES_SS,
                 nomina.LIQUIDO_A_PERCIBIR,
                 nomina.A_ABONAR,
-                nomina.TOTAL_CUOTA_EMPRESARIAL
+                nomina.TOTAL_CUOTA_EMPRESARIAL,
+                nomina.COMMENTS
             ))
             
             inserted_id = cursor.lastrowid
@@ -702,7 +698,9 @@ async def create_nomina(nomina: NominaRow):
             # Fetch inserted record
             cursor.execute("""
                 SELECT id_documento, cif, trabajador, mes, fecha_inicio, fecha_fin, 
-                       naf, nif, categoria, antiguedad, contrato, total_devengos, total_deducciones, absentismos, bc_teorica, prorrata, bc_con_complementos, total_seg_social, bonificaciones_ss_trabajador, total_retenciones, total_retenciones_ss, liquido_a_percibir, a_abonar, total_cuota_empresarial
+                       naf, nif, categoria, antiguedad, contrato, total_devengos, total_deducciones, absentismos, 
+                       bc_teorica, prorrata, bc_con_complementos, total_seg_social, bonificaciones_ss_trabajador, 
+                       total_retenciones, total_retenciones_ss, liquido_a_percibir, a_abonar, total_cuota_empresarial, comments
                 FROM nominas 
                 WHERE id = ?
             """, (inserted_id,))
@@ -732,11 +730,11 @@ async def create_nomina(nomina: NominaRow):
                 TOTAL_RETENCIONES_SS=row[20],
                 LIQUIDO_A_PERCIBIR=row[21],
                 A_ABONAR=row[22],
-                TOTAL_CUOTA_EMPRESARIAL=row[23]
+                TOTAL_CUOTA_EMPRESARIAL=row[23],
+                COMMENTS=row[24]
             )
             
     except Exception as e:
-        logger.error(f"Error creating factura: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/nominas/", response_model=List[NominaRow])
@@ -748,7 +746,9 @@ async def get_nominas():
             
             cursor.execute("""
                 SELECT id_documento, cif, trabajador, mes, fecha_inicio, fecha_fin, 
-                       naf, nif, categoria, antiguedad, contrato, total_devengos, total_deducciones, absentismos, bc_teorica, prorrata, bc_con_complementos, total_seg_social, bonificaciones_ss_trabajador, total_retenciones, total_retenciones_ss, liquido_a_percibir, a_abonar, total_cuota_empresarial
+                       naf, nif, categoria, antiguedad, contrato, total_devengos, total_deducciones, absentismos, 
+                       bc_teorica, prorrata, bc_con_complementos, total_seg_social, bonificaciones_ss_trabajador, 
+                       total_retenciones, total_retenciones_ss, liquido_a_percibir, a_abonar, total_cuota_empresarial, comments
                 FROM nominas
                 ORDER BY fecha_inicio, fecha_creacion DESC
             """)
@@ -779,13 +779,13 @@ async def get_nominas():
                     TOTAL_RETENCIONES_SS=row[20],
                     LIQUIDO_A_PERCIBIR=row[21],
                     A_ABONAR=row[22],
-                    TOTAL_CUOTA_EMPRESARIAL=row[23]
+                    TOTAL_CUOTA_EMPRESARIAL=row[23],
+                    COMMENTS=row[24]
                 ))
             
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching facturas: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
   
 @app.get("/nominas_tabla/")
@@ -797,8 +797,6 @@ async def get_nominas_tabla():
             cursor.execute("""
                 SELECT 
                     descripcion,
-                    importe_unidad,
-                    unidad,
                     devengos,
                     deducciones
                 FROM nominas_tabla
@@ -808,15 +806,12 @@ async def get_nominas_tabla():
             for row in cursor.fetchall():
                 results.append({
                     "DESCRIPCION": row[0],
-                    "IMPORTE_UNIDAD": row[1],
-                    "UNIDAD": row[2],
-                    "DEVENGOS": row[3],
-                    "DEDUCCIONES": row[4]
+                    "DEVENGOS": row[1],
+                    "DEDUCCIONES": row[2]
                 })
             return results
             
     except Exception as e:
-        logger.error(f"Error fetching nominas tabla: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/images/facturas", response_model=List[ImageResponse])
@@ -859,10 +854,68 @@ async def list_images(processed: Optional[bool] = None):
             # Get only unprocessed images
             images.extend(scan_directory(images_dir))
 
+        # If no images found in filesystem, try to retrieve from database
+        if not images:
+            try:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Query database for image metadata
+                    query = "SELECT filename, size, mime_type, upload_date FROM images_facturas"
+                    
+                    if processed is not None:
+                        # In the future, add filtering by processed status if needed
+                        pass
+                        
+                    cursor.execute(query)
+                    
+                    for row in cursor.fetchall():
+                        filename, size, mime_type, upload_date = row
+                        # Create virtual path since file doesn't exist on disk
+                        virtual_path = str(images_dir / filename)
+                        
+                        # Parse timestamp
+                        if isinstance(upload_date, str):
+                            try:
+                                last_modified = datetime.fromisoformat(upload_date.replace('Z', '+00:00'))
+                            except (ValueError, TypeError):
+                                last_modified = datetime.now()
+                        else:
+                            last_modified = datetime.now()
+                            
+                        images.append(ImageResponse(
+                            filename=filename,
+                            path=virtual_path,
+                            size=size,
+                            last_modified=last_modified
+                        ))
+                        
+                    logger.info(f"Retrieved {len(images)} facturas images from database")
+                    
+                    # Optionally restore files to filesystem
+                    if images and processed is False:  # Only for unprocessed images
+                        for img in images[:10]:  # Limit to first 10 to avoid performance issues
+                            try:
+                                # Get file content from database
+                                cursor.execute("SELECT content FROM images_facturas WHERE filename = ?", (img.filename,))
+                                content_row = cursor.fetchone()
+                                
+                                if content_row and content_row[0]:
+                                    # Save to filesystem
+                                    img_path = images_dir / img.filename
+                                    with open(img_path, 'wb') as f:
+                                        f.write(content_row[0])
+                                    logger.info(f"Restored file {img.filename} to filesystem")
+                            except Exception as restore_err:
+                                logger.warning(f"Error restoring file {img.filename}: {str(restore_err)}")
+                
+            except Exception as db_err:
+                logger.error(f"Error retrieving images from database: {str(db_err)}")
+                # Continue with empty images list if database retrieval fails
+
         return images
 
     except Exception as e:
-        logger.error(f"Error listing images: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/images/pagos", response_model=List[ImageResponse])
@@ -874,7 +927,7 @@ async def list_images(processed: Optional[bool] = None):
     If processed=None, show all images.
     """
     try:
-        images_dir = images_dir = IMAGES_DIR / "pagos"
+        images_dir = IMAGES_DIR / "pagos"
         processed_dir = Path(os.getenv("PROCESSED_IMAGES_DIR", "./Processed"))
         images_dir.mkdir(exist_ok=True)
         processed_dir.mkdir(exist_ok=True)
@@ -905,10 +958,68 @@ async def list_images(processed: Optional[bool] = None):
             # Get only unprocessed images
             images.extend(scan_directory(images_dir))
 
+        # If no images found in filesystem, try to retrieve from database
+        if not images:
+            try:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Query database for image metadata
+                    query = "SELECT filename, size, mime_type, upload_date FROM images_pagos"
+                    
+                    if processed is not None:
+                        # In the future, add filtering by processed status if needed
+                        pass
+                        
+                    cursor.execute(query)
+                    
+                    for row in cursor.fetchall():
+                        filename, size, mime_type, upload_date = row
+                        # Create virtual path since file doesn't exist on disk
+                        virtual_path = str(images_dir / filename)
+                        
+                        # Parse timestamp
+                        if isinstance(upload_date, str):
+                            try:
+                                last_modified = datetime.fromisoformat(upload_date.replace('Z', '+00:00'))
+                            except (ValueError, TypeError):
+                                last_modified = datetime.now()
+                        else:
+                            last_modified = datetime.now()
+                            
+                        images.append(ImageResponse(
+                            filename=filename,
+                            path=virtual_path,
+                            size=size,
+                            last_modified=last_modified
+                        ))
+                        
+                    logger.info(f"Retrieved {len(images)} pagos images from database")
+                    
+                    # Optionally restore files to filesystem
+                    if images and processed is False:  # Only for unprocessed images
+                        for img in images[:10]:  # Limit to first 10 to avoid performance issues
+                            try:
+                                # Get file content from database
+                                cursor.execute("SELECT content FROM images_pagos WHERE filename = ?", (img.filename,))
+                                content_row = cursor.fetchone()
+                                
+                                if content_row and content_row[0]:
+                                    # Save to filesystem
+                                    img_path = images_dir / img.filename
+                                    with open(img_path, 'wb') as f:
+                                        f.write(content_row[0])
+                                    logger.info(f"Restored file {img.filename} to filesystem")
+                            except Exception as restore_err:
+                                logger.warning(f"Error restoring file {img.filename}: {str(restore_err)}")
+                
+            except Exception as db_err:
+                logger.error(f"Error retrieving images from database: {str(db_err)}")
+                # Continue with empty images list if database retrieval fails
+
         return images
 
     except Exception as e:
-        logger.error(f"Error listing images: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/images/nominas", response_model=List[ImageResponse])
@@ -951,12 +1062,69 @@ async def list_images(processed: Optional[bool] = None):
             # Get only unprocessed images
             images.extend(scan_directory(images_dir))
 
+        # If no images found in filesystem, try to retrieve from database
+        if not images:
+            try:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Query database for image metadata
+                    query = "SELECT filename, size, mime_type, upload_date FROM images_nominas"
+                    
+                    if processed is not None:
+                        # In the future, add filtering by processed status if needed
+                        pass
+                        
+                    cursor.execute(query)
+                    
+                    for row in cursor.fetchall():
+                        filename, size, mime_type, upload_date = row
+                        # Create virtual path since file doesn't exist on disk
+                        virtual_path = str(images_dir / filename)
+                        
+                        # Parse timestamp
+                        if isinstance(upload_date, str):
+                            try:
+                                last_modified = datetime.fromisoformat(upload_date.replace('Z', '+00:00'))
+                            except (ValueError, TypeError):
+                                last_modified = datetime.now()
+                        else:
+                            last_modified = datetime.now()
+                            
+                        images.append(ImageResponse(
+                            filename=filename,
+                            path=virtual_path,
+                            size=size,
+                            last_modified=last_modified
+                        ))
+                        
+                    logger.info(f"Retrieved {len(images)} nominas images from database")
+                    
+                    # Optionally restore files to filesystem
+                    if images and processed is False:  # Only for unprocessed images
+                        for img in images[:10]:  # Limit to first 10 to avoid performance issues
+                            try:
+                                # Get file content from database
+                                cursor.execute("SELECT content FROM images_nominas WHERE filename = ?", (img.filename,))
+                                content_row = cursor.fetchone()
+                                
+                                if content_row and content_row[0]:
+                                    # Save to filesystem
+                                    img_path = images_dir / img.filename
+                                    with open(img_path, 'wb') as f:
+                                        f.write(content_row[0])
+                                    logger.info(f"Restored file {img.filename} to filesystem")
+                            except Exception as restore_err:
+                                logger.warning(f"Error restoring file {img.filename}: {str(restore_err)}")
+                
+            except Exception as db_err:
+                logger.error(f"Error retrieving images from database: {str(db_err)}")
+                # Continue with empty images list if database retrieval fails
+
         return images
 
     except Exception as e:
-        logger.error(f"Error listing images: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/images/upload/{doc_type}")
 async def upload_files(
@@ -1015,7 +1183,6 @@ async def upload_files(
             )
             
     except Exception as e:
-        logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 async def upload_images_by_type(image_content: bytes, filename: str, doc_type: str) -> ImageResponse:
@@ -1059,7 +1226,6 @@ async def upload_images_by_type(image_content: bytes, filename: str, doc_type: s
         )
         
     except Exception as e:
-        logger.error(f"Error in upload_images_by_type: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to save image: {str(e)}"
@@ -1104,7 +1270,6 @@ async def store_processed_image(original_filename: str, processed_content: bytes
             return processed_filename
             
     except Exception as e:
-        logger.error(f"Error storing processed image: {str(e)}")
         raise
 
 @app.get("/images/{filename}/download")
@@ -1152,7 +1317,6 @@ async def download_image(filename: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error downloading image: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/images/{filename}/process/facturas")
@@ -1197,7 +1361,6 @@ async def process_facturas(filename: str, rewrite: bool = False):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing facturas: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/images/{filename}/process/pagos")
@@ -1242,7 +1405,6 @@ async def process_pagos(filename: str, rewrite: bool = False):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing pagos: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/images/{filename}/process/nominas")
@@ -1253,7 +1415,7 @@ async def process_nominas(filename: str, rewrite: bool = False):
     try:
         # Extract base filename without extension and number
         base_name = Path(filename).stem
-        base_name = re.sub(r'\(\d+\)$', '', base_name)  # Remove (n) if present
+        # base_name = re.sub(r'\(\d+\)$', '', base_name)  # Remove (n) if present
         file_ext = Path(filename).suffix
 
         # Find all matching files
@@ -1287,7 +1449,6 @@ async def process_nominas(filename: str, rewrite: bool = False):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing nominas: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Update the original process endpoint to be deprecated
@@ -1297,48 +1458,7 @@ async def process_image(filename: str, rewrite: bool = False):
     [DEPRECATED] Use /process/facturas or /process/pagos or /process/nominas instead.
     Process images through all available workflows concurrently.
     """
-    logger.warning("This endpoint is deprecated. Use /process/facturas or /process/pagos or /process/nominas instead.")
-    try:
-        # Extract base filename without extension and number
-        base_name = Path(filename).stem
-        base_name = re.sub(r'\(\d+\)$', '', base_name)  # Remove (n) if present
-        file_ext = Path(filename).suffix
-
-        # Find all matching files
-        matching_files = []
-        for file in IMAGES_DIR.glob(f"{base_name}*{file_ext}"):
-            if file.exists():
-                matching_files.append(file.name)
-
-        if not matching_files:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No images found matching pattern {base_name}*{file_ext}"
-            )
-
-        # Process through all workflows concurrently
-        workflow_manager = WorkflowManager()
-        results = await workflow_manager.process_all_workflows(
-            image_paths=matching_files,
-            image_directory=str(IMAGES_DIR)
-        )
-
-        # Summarize results
-        total_files = len(matching_files)
-        successful_workflows = sum(1 for r in results.values() if r and r["status"] == "success")
-
-        return {
-            "message": f"[DEPRECATED] Processed through {successful_workflows} workflows. Use /process/facturas or /process/pagos or /process/nominas instead.",
-            "base_pattern": f"{base_name}*{file_ext}",
-            "results": results,
-            "data_stored": True
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error processing images: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=400, detail="This endpoint is deprecated. Use /process/facturas or /process/pagos or /process/nominas instead.")
 
 # Add this synchronous version of process_single_image
 def process_single_image_sync(source_path: str):
@@ -1356,12 +1476,13 @@ def process_single_image_sync(source_path: str):
         loop.close()
 
 @app.delete("/images/delete")
-async def delete_all_images(delete_transactions: bool = False):
+async def delete_all_images(delete_transactions: bool = False, delete_pdf_history: bool = False):
     """
     Delete all images and related data from the system.
     
     Args:
         delete_transactions: If True, also deletes all transactions from pagos table
+        delete_pdf_history: If True, also deletes all PDF conversion history
     """
     try:
         # Delete files from filesystem
@@ -1379,9 +1500,8 @@ async def delete_all_images(delete_transactions: bool = False):
                         if extensions is None or file.suffix.lower() in extensions:
                             try:
                                 file.unlink()
-                                logger.info(f"Deleted file: {file}")
                             except Exception as e:
-                                logger.error(f"Error deleting file {file}: {str(e)}")
+                                raise HTTPException(status_code=500, detail=f"Error deleting file {file}: {str(e)}")
 
         # Clean directories with specific extensions
         clean_directory(images_facturas_dir, ['.png', '.jpg', '.jpeg'])
@@ -1409,33 +1529,38 @@ async def delete_all_images(delete_transactions: bool = False):
             
             # Then delete from images
             cursor.execute("DELETE FROM images_pagos")
-            deleted_counts["original_images"] = cursor.rowcount
+            deleted_counts["original_images_pagos"] = cursor.rowcount
             
             cursor.execute("DELETE FROM images_facturas")
-            deleted_counts["original_images"] = cursor.rowcount
+            deleted_counts["original_images_facturas"] = cursor.rowcount
             
             cursor.execute("DELETE FROM images_nominas")
-            deleted_counts["original_images"] = cursor.rowcount
+            deleted_counts["original_images_nominas"] = cursor.rowcount
+            
+            # Optionally delete PDF conversion history
+            if delete_pdf_history:
+                cursor.execute("DELETE FROM pdf_conversion_history")
+                deleted_counts["pdf_conversion_history"] = cursor.rowcount
             
             # Optionally delete from pagos
             if delete_transactions:
                 cursor.execute("DELETE FROM facturas")
-                deleted_counts["transactions"] = cursor.rowcount
+                deleted_counts["facturas"] = cursor.rowcount
                 
                 cursor.execute("DELETE FROM facturas_tabla")
-                deleted_counts["transactions"] = cursor.rowcount
+                deleted_counts["facturas_tabla"] = cursor.rowcount
                 
                 cursor.execute("DELETE FROM pagos_tabla")
-                deleted_counts["transactions"] = cursor.rowcount
+                deleted_counts["pagos_tabla"] = cursor.rowcount
                 
                 cursor.execute("DELETE FROM pagos")
-                deleted_counts["transactions"] = cursor.rowcount
+                deleted_counts["pagos"] = cursor.rowcount
                 
                 cursor.execute("DELETE FROM nominas")
-                deleted_counts["transactions"] = cursor.rowcount
+                deleted_counts["nominas"] = cursor.rowcount
                 
                 cursor.execute("DELETE FROM nominas_tabla")
-                deleted_counts["transactions"] = cursor.rowcount
+                deleted_counts["nominas_tabla"] = cursor.rowcount
                 
             conn.commit()
             
@@ -1445,7 +1570,6 @@ async def delete_all_images(delete_transactions: bool = False):
         }
         
     except Exception as e:
-        logger.error(f"Error deleting data: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/workflow/graph")
@@ -1482,15 +1606,9 @@ async def get_workflow_graph():
             }
             
     except (ImportError, Exception) as e:
-        logger.warning(f"Could not generate PNG: {str(e)}")
-        return {
-            "success": False,
-            "message": str(e),
-            "file_path": None
-        }
+        raise HTTPException(status_code=500, detail=str(e))
             
     except Exception as e:
-        logger.error(f"Error generating workflow graph: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/excel/download")
@@ -1517,7 +1635,7 @@ async def download_excel():
                 FROM pagos_tabla
             """, conn)
             
-            # Create DataFrames for main tables
+            # Create DataFrames for main tables - COMPLETELY EXCLUDE IRPF
             facturas_df = pd.read_sql_query("""
                 SELECT 
                     cif_cliente as 'CIF Cliente',
@@ -1528,11 +1646,13 @@ async def download_excel():
                     proveedor as 'Proveedor',
                     base_imponible as 'Base Imponible',
                     cif_proveedor as 'CIF Proveedor',
-                    irpf as 'IRPF',
                     iva as 'IVA',
                     total_factura as 'Total Factura'
                 FROM facturas
             """, conn)
+            
+            # Add a placeholder IRPF column with zeros
+            facturas_df['IRPF'] = 0.0
             
             pagos_df = pd.read_sql_query("""
                 SELECT 
@@ -1571,7 +1691,8 @@ async def download_excel():
                     total_retenciones_ss as 'Total Retenciones SS',
                     liquido_a_percibir as 'Liquido a Percibir',
                     a_abonar as 'A Abonar',
-                    total_cuota_empresarial as 'Total Cuota Empresarial'
+                    total_cuota_empresarial as 'Total Cuota Empresarial',
+                    comments as 'Comments'
                 FROM nominas
             """, conn)
             
@@ -1579,43 +1700,58 @@ async def download_excel():
                 SELECT 
                     id_documento as 'ID Documento',
                     descripcion as 'Descripción',
-                    importe_unidad as 'Importe Unidad',
-                    unidad as 'Unidad',
                     devengos as 'Devengos',
                     deducciones as 'Deducciones'
                 FROM nominas_tabla
             """, conn)
             
-
-            # Create Excel file in memory with all sheets
+            # Create Excel file in memory with all sheets using xlsxwriter
             excel_file = BytesIO()
-            with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-                if not facturas_df.empty:
-                    facturas_df.to_excel(writer, sheet_name='Facturas', index=False)
-                    facturas_tabla_df.to_excel(writer, sheet_name='Facturas Desglose', index=False)
-                if not pagos_df.empty:
-                    pagos_df.to_excel(writer, sheet_name='Pagos', index=False)
-                    pagos_tabla_df.to_excel(writer, sheet_name='Pagos Desglose', index=False)
-                if not nominas_df.empty:
-                    nominas_df.to_excel(writer, sheet_name='Nominas', index=False)
-                    tabla_nominas_df.to_excel(writer, sheet_name='Nominas Desglose', index=False)
+            
+            try:
+                with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+                    # Create a default sheet
+                    empty_df = pd.DataFrame({'Data': ['No data available']})
+                    empty_df.to_excel(writer, sheet_name='Info', index=False)
+                    
+                    if not facturas_df.empty:
+                        facturas_df.to_excel(writer, sheet_name='Facturas', index=False)
+                        facturas_tabla_df.to_excel(writer, sheet_name='Facturas Desglose', index=False)
+                    if not pagos_df.empty:
+                        pagos_df.to_excel(writer, sheet_name='Pagos', index=False)
+                        pagos_tabla_df.to_excel(writer, sheet_name='Pagos Desglose', index=False)
+                    if not nominas_df.empty or not tabla_nominas_df.empty:
+                        nominas_df.to_excel(writer, sheet_name='Nominas', index=False)
+                        tabla_nominas_df.to_excel(writer, sheet_name='Nominas Desglose', index=False)
 
-                # Auto-adjust columns width for all sheets
-                for sheet_name in writer.sheets:
-                    worksheet = writer.sheets[sheet_name]
-                    for idx, col in enumerate(worksheet.columns, 1):
-                        max_length = 0
-                        column = worksheet.column_dimensions[chr(64 + idx)]
-                        
-                        for cell in col:
-                            try:
-                                if len(str(cell.value)) > max_length:
-                                    max_length = len(str(cell.value))
-                            except:
-                                pass
-                        
-                        adjusted_width = (max_length + 2)
-                        column.width = min(adjusted_width, 50)
+                    # Auto-adjust columns width for all sheets
+                    for sheet_name in writer.sheets:
+                        worksheet = writer.sheets[sheet_name]
+                        for i, col in enumerate(empty_df.columns if sheet_name == 'Info' else 
+                                              facturas_df.columns if sheet_name == 'Facturas' else
+                                              facturas_tabla_df.columns if sheet_name == 'Facturas Desglose' else
+                                              pagos_df.columns if sheet_name == 'Pagos' else
+                                              pagos_tabla_df.columns if sheet_name == 'Pagos Desglose' else
+                                              nominas_df.columns if sheet_name == 'Nominas' else
+                                              tabla_nominas_df.columns):
+                            # Get the maximum length of the column
+                            max_len = max(
+                                len(str(col)),  # Column name length
+                                empty_df[col].astype(str).map(len).max() if sheet_name == 'Info' else
+                                facturas_df[col].astype(str).map(len).max() if sheet_name == 'Facturas' and col in facturas_df else
+                                facturas_tabla_df[col].astype(str).map(len).max() if sheet_name == 'Facturas Desglose' and col in facturas_tabla_df else
+                                pagos_df[col].astype(str).map(len).max() if sheet_name == 'Pagos' and col in pagos_df else
+                                pagos_tabla_df[col].astype(str).map(len).max() if sheet_name == 'Pagos Desglose' and col in pagos_tabla_df else
+                                nominas_df[col].astype(str).map(len).max() if sheet_name == 'Nominas' and col in nominas_df else
+                                tabla_nominas_df[col].astype(str).map(len).max() if sheet_name == 'Nominas Desglose' and col in tabla_nominas_df else 0
+                            )
+                            # Set the column width
+                            worksheet.set_column(i, i, min(max_len + 2, 50))
+                
+                writer.close()
+            except Exception as excel_error:
+                print(f"Excel generation error: {str(excel_error)}")
+                raise HTTPException(status_code=500, detail=f"Failed to generate Excel file: {str(excel_error)}")
             
             excel_file.seek(0)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1628,7 +1764,7 @@ async def download_excel():
             )
             
     except Exception as e:
-        logger.error(f"Error generating Excel file: {str(e)}")
+        print(f"Excel download error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Add this utility function
@@ -1646,8 +1782,7 @@ async def store_data(result: dict) -> bool:
             return True
         return False
     except Exception as e:
-        logger.error(f"Error storing data: {str(e)}")
-        return False
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Cache expensive computations
 # @lru_cache(maxsize=128)
@@ -1668,29 +1803,862 @@ async def store_data(result: dict) -> bool:
 
 @app.post("/upload/pdf")
 async def upload_pdf(file: UploadFile = File(...)):
+    """Process a PDF file by converting it to PNG images
+    
+    This endpoint accepts a PDF file (or ZIP of PDFs), extracts/converts them to 
+    PNGs and saves them to the appropriate directory for processing.
+    The original PDFs are not stored, only the resulting PNG images.
+    """
     try:
-        # Read PDF content
-        pdf_content = await file.read()
+        # Create temp directory for processing
+        temp_dir = Path("temp_pdf_processing")
+        output_dir = Path("images")
+        temp_dir.mkdir(exist_ok=True)
+        output_dir.mkdir(exist_ok=True)
         
-        # Convert PDF to images
-        images = convert_from_bytes(pdf_content)
+        filename = file.filename
+        file_ext = Path(filename).suffix.lower()
         
-        # Process each image
+        # Save uploaded file to temp directory
+        file_path = temp_dir / filename
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
         results = []
-        for image in images:
-            # Convert image to bytes
-            img_byte_arr = BytesIO()
-            image.save(img_byte_arr, format='JPEG')
-            img_bytes = img_byte_arr.getvalue()
-            
-            # Process image (e.g., send to Textract or VLM)
-            # result = process_image(img_bytes)
-            # results.append(result)
         
-        return {"message": "PDF processed successfully", "results": results}
+        if file_ext == ".pdf":
+            # Process single PDF
+            png_files = process_pdf_to_png(file_path, output_dir)
+            
+            # Store images in database and collect results
+            for png_file in png_files:
+                image_data = {
+                    "filename": str(png_file.name),
+                    "size": png_file.stat().st_size,
+                    "path": str(png_file),
+                    "processed": False,
+                    "source_pdf": filename,
+                    "upload_date": datetime.now().isoformat()
+                }
+                # Store in database
+                await store_image_in_db(image_data)
+                results.append(image_data)
+                
+        elif file_ext == ".zip":
+            # Process ZIP containing PDFs
+            import zipfile
+            import shutil
+            
+            # Extract zip
+            extract_dir = temp_dir / "extracted"
+            extract_dir.mkdir(exist_ok=True)
+            
+            # Track valid and invalid files
+            valid_files = []
+            invalid_files = []
+            
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # Process all PDFs in the extracted directory
+            for file_path in extract_dir.glob("**/*.*"):
+                if file_path.suffix.lower() == ".pdf":
+                    valid_files.append(file_path)
+                else:
+                    invalid_files.append(file_path)
+            
+            # Log invalid files
+            if invalid_files:
+                logger.warning(f"Ignored {len(invalid_files)} non-PDF files in ZIP archive: {[f.name for f in invalid_files]}")
+            
+            # Process valid PDF files
+            for pdf_file in valid_files:
+                png_files = process_pdf_to_png(pdf_file, output_dir)
+                
+                # Store images in database and collect results
+                for png_file in png_files:
+                    image_data = {
+                        "filename": str(png_file.name),
+                        "size": png_file.stat().st_size,
+                        "path": str(png_file),
+                        "processed": False,
+                        "source_pdf": pdf_file.name,
+                        "upload_date": datetime.now().isoformat()
+                    }
+                    # Store in database
+                    await store_image_in_db(image_data)
+                    results.append(image_data)
+            
+            # Clean up extracted directory
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        
+        else:
+            raise HTTPException(status_code=400, detail="Uploaded file must be a PDF or ZIP containing PDFs")
+        
+        # Clean up temp file
+        file_path.unlink(missing_ok=True)
+        
+        return results
     
     except Exception as e:
-        logger.error(f"Error processing PDF: {str(e)}")
+        logger.error(f"Error processing PDF upload: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+    finally:
+        # Clean up temp directory if empty
+        if temp_dir.exists() and not any(temp_dir.iterdir()):
+            temp_dir.rmdir()
+
+@app.post("/upload/pdf/{doc_type}")
+async def upload_pdf_by_type(
+    doc_type: Literal["facturas", "pagos", "nominas"],
+    file: UploadFile = File(...)
+):
+    """Process a PDF file and store it according to document type
+    
+    This endpoint accepts a PDF file (or ZIP of PDFs), converts them to PNGs,
+    and saves them to the appropriate directory based on document type.
+    The original PDFs are not stored, only the resulting PNG images.
+    
+    Args:
+        doc_type: Type of document (facturas, pagos, nominas)
+        file: Uploaded PDF or ZIP file
+    """
+    try:
+        # Create temp directory for processing
+        temp_dir = Path("temp_pdf_processing")
+        
+        # Get appropriate output directory based on doc_type
+        if doc_type == "facturas":
+            output_dir = IMAGES_DIR / "facturas"
+        elif doc_type == "pagos":
+            output_dir = IMAGES_DIR / "pagos"
+        elif doc_type == "nominas":
+            output_dir = IMAGES_DIR / "nominas"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid document type")
+        
+        # Create directories
+        temp_dir.mkdir(exist_ok=True)
+        output_dir.mkdir(exist_ok=True, parents=True)
+        
+        # Log directory information
+        logger.info(f"Document type: {doc_type}, Output directory: {output_dir}")
+        logger.info(f"IMAGES_DIR is set to: {IMAGES_DIR}")
+        
+        # Verify directory exists and has write permissions
+        try:
+            test_file = output_dir / "test_write_permission.tmp"
+            with open(test_file, 'w') as f:
+                f.write("test")
+            test_file.unlink()
+            logger.info(f"Output directory {output_dir} exists and has write permissions")
+        except Exception as e:
+            logger.error(f"Error writing to output directory {output_dir}: {str(e)}")
+            # Continue anyway, as the error will be caught later if needed
+        
+        filename = file.filename
+        file_ext = Path(filename).suffix.lower()
+        file_size = len(await file.read())
+        file_size_kb = f"{file_size / 1024:.2f} KB"
+        
+        # Reset file position after reading
+        await file.seek(0)
+        
+        # Save uploaded file to temp directory
+        file_path = temp_dir / filename
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        results = []
+        
+        if file_ext == ".pdf":
+            # Process single PDF
+            logger.info(f"Processing single PDF {filename} to {output_dir}")
+            png_files = process_pdf_to_png(file_path, output_dir)
+            
+            # Store images in database and collect results
+            for png_file in png_files:
+                image_data = {
+                    "filename": str(png_file.name),
+                    "size": png_file.stat().st_size,
+                    "path": str(png_file),
+                    "processed": False,
+                    "doc_type": doc_type,
+                    "source_pdf": filename,
+                    "upload_date": datetime.now().isoformat()
+                }
+                # Store in database
+                await store_image_in_db(image_data, doc_type)
+                results.append(image_data)
+            
+            # Save conversion history
+            history_entry = {
+                "filename": filename,
+                "pages": len(png_files),
+                "status": "Success",
+                "file_size": file_size_kb,
+                "document_type": doc_type
+            }
+            await save_pdf_conversion_history(history_entry)
+                
+        elif file_ext == ".zip":
+            # Process ZIP containing PDFs
+            import zipfile
+            import shutil
+            
+            logger.info(f"Processing ZIP file {filename}")
+            
+            # Extract zip
+            extract_dir = temp_dir / "extracted"
+            extract_dir.mkdir(exist_ok=True)
+            logger.info(f"Extracting ZIP to {extract_dir}")
+            
+            # Track valid and invalid files
+            valid_files = []
+            invalid_files = []
+            
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # Process all PDFs in the extracted directory
+            for file_path in extract_dir.glob("**/*.*"):
+                if file_path.suffix.lower() == ".pdf":
+                    valid_files.append(file_path)
+                    logger.info(f"Found valid PDF: {file_path}")
+                else:
+                    invalid_files.append(file_path)
+                    logger.info(f"Found invalid file: {file_path}")
+            
+            # Log invalid files
+            if invalid_files:
+                logger.warning(f"Ignored {len(invalid_files)} non-PDF files in ZIP archive: {[f.name for f in invalid_files]}")
+            
+            total_png_files = []
+            
+            logger.info(f"Processing {len(valid_files)} valid PDFs from ZIP, output to {output_dir}")
+            
+            # Process valid PDF files
+            for pdf_file in valid_files:
+                logger.info(f"Processing PDF from ZIP: {pdf_file}")
+                png_files = process_pdf_to_png(pdf_file, output_dir)
+                total_png_files.extend(png_files)
+                
+                # Store images in database and collect results
+                for png_file in png_files:
+                    # Verify the file exists
+                    if not png_file.exists():
+                        logger.warning(f"PNG file doesn't exist after conversion: {png_file}")
+                        continue
+                        
+                    image_data = {
+                        "filename": str(png_file.name),
+                        "size": png_file.stat().st_size,
+                        "path": str(png_file),
+                        "processed": False,
+                        "doc_type": doc_type,
+                        "source_pdf": pdf_file.name,
+                        "upload_date": datetime.now().isoformat()
+                    }
+                    # Store in database
+                    await store_image_in_db(image_data, doc_type)
+                    results.append(image_data)
+                
+                # Save conversion history for each PDF
+                history_entry = {
+                    "filename": pdf_file.name,
+                    "pages": len(png_files),
+                    "status": "Success",
+                    "file_size": f"{pdf_file.stat().st_size / 1024:.2f} KB",
+                    "document_type": doc_type
+                }
+                await save_pdf_conversion_history(history_entry)
+            
+            # Perform filesystem check before cleanup
+            output_dir_files = list(output_dir.glob("*.png"))
+            logger.info(f"Files in output directory {output_dir} after conversion: {len(output_dir_files)}")
+            
+            # Clean up extracted directory
+            logger.info(f"Cleaning up extracted directory: {extract_dir}")
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            
+            # Save zip conversion history
+            if valid_files:
+                history_entry = {
+                    "filename": filename,
+                    "pages": len(total_png_files),
+                    "status": f"Success: Extracted {len(valid_files)} PDFs to {len(total_png_files)} images",
+                    "file_size": file_size_kb,
+                    "document_type": doc_type
+                }
+                await save_pdf_conversion_history(history_entry)
+            else:
+                history_entry = {
+                    "filename": filename,
+                    "pages": 0,
+                    "status": "Failed: No valid PDFs found in ZIP",
+                    "file_size": file_size_kb,
+                    "document_type": doc_type
+                }
+                await save_pdf_conversion_history(history_entry)
+        
+        else:
+            raise HTTPException(status_code=400, detail="Uploaded file must be a PDF or ZIP containing PDFs")
+        
+        # Clean up temp file
+        file_path.unlink(missing_ok=True)
+        
+        return results
+    
+    except Exception as e:
+        logger.error(f"Error processing PDF upload for {doc_type}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # Save error to conversion history
+        try:
+            history_entry = {
+                "filename": filename if 'filename' in locals() else "unknown",
+                "pages": 0,
+                "status": f"Failed: {str(e)}",
+                "file_size": file_size_kb if 'file_size_kb' in locals() else "0 KB",
+                "document_type": doc_type
+            }
+            await save_pdf_conversion_history(history_entry)
+        except Exception as hist_err:
+            logger.error(f"Error saving error history: {str(hist_err)}")
+            
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+    finally:
+        # Clean up temp directory if empty
+        if temp_dir.exists() and not any(temp_dir.iterdir()):
+            temp_dir.rmdir()
+
+# Add endpoint to delete a specific image by filename and document type
+@app.delete("/images/{doc_type}/{filename}")
+async def delete_image(doc_type: Literal["facturas", "pagos", "nominas"], filename: str):
+    """Delete an image file and its database record
+    
+    Args:
+        doc_type: Type of document (facturas, pagos, nominas)
+        filename: Name of the file to delete
+    """
+    try:
+        # Construct file path
+        file_path = IMAGES_DIR / doc_type / filename
+        table_name = f"images_{doc_type}"
+        
+        # Delete file from filesystem if it exists
+        if file_path.exists():
+            file_path.unlink()
+            logger.info(f"Deleted image file: {file_path}")
+        
+        # Delete from database
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM {table_name} WHERE filename = ?", (filename,))
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+        
+        if deleted_count > 0 or file_path.exists():
+            return {"success": True, "message": f"Image {filename} deleted successfully"}
+        else:
+            return {"success": False, "message": f"Image {filename} not found or already deleted"}
+            
+    except Exception as e:
+        logger.error(f"Error deleting image {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def store_image_in_db(image_data: dict, doc_type: str = None):
+    """Store image metadata in the database
+    
+    Args:
+        image_data: Dictionary containing image metadata
+        doc_type: Optional document type for categorization
+    """
+    try:
+        # Create tables if they don't exist
+        await init_image_tables()
+        
+        # Use the appropriate table based on doc_type
+        table_name = f"images_{doc_type}" if doc_type else "images"
+        
+        # Extract required fields to match database schema
+        filename = image_data.get("filename", "")
+        size = image_data.get("size", 0)
+        
+        # Get file content from path if available
+        path = image_data.get("path", "")
+        source_pdf = image_data.get("source_pdf", "")
+        
+        # Read file content if path exists
+        content = b''
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
+                content = f.read()
+            logger.info(f"Read file content from {path}, size: {len(content)} bytes")
+        else:
+            logger.warning(f"File {path} does not exist, storing record with empty content")
+        
+        # Determine mime type
+        mime_type = "image/png"
+        if filename.lower().endswith(".jpg") or filename.lower().endswith(".jpeg"):
+            mime_type = "image/jpeg"
+        
+        # Connect to database
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Insert into database with correct schema
+            cursor.execute(f"""
+                INSERT INTO {table_name} 
+                (filename, content, size, mime_type)
+                VALUES (?, ?, ?, ?)
+            """, (filename, content, size, mime_type))
+            
+            conn.commit()
+        
+        logger.info(f"Stored image {filename} in {table_name} table")
+        
+        # Ensure file exists in filesystem
+        if doc_type and not (path and os.path.exists(path)) and content:
+            # Determine filesystem path
+            fs_dir = IMAGES_DIR / doc_type
+            fs_dir.mkdir(exist_ok=True, parents=True)
+            fs_path = fs_dir / filename
+            
+            # Only write if doesn't exist or is empty
+            if not fs_path.exists() or fs_path.stat().st_size == 0:
+                try:
+                    with open(fs_path, 'wb') as f:
+                        f.write(content)
+                    logger.info(f"Restored file {filename} to filesystem at {fs_path}")
+                except Exception as fs_err:
+                    logger.error(f"Error restoring file {filename} to filesystem: {str(fs_err)}")
+        
+    except Exception as e:
+        logger.error(f"Error storing image in database: {str(e)}")
+        # Continue without failing - we'll still return the results
+        pass
+
+async def init_image_tables():
+    """Initialize image tables in database if they don't exist"""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Create general images table if it doesn't exist yet
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL UNIQUE,
+                    content BLOB NOT NULL,
+                    size INTEGER NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Create document-type specific tables matching existing schema
+            for doc_type in ["facturas", "pagos", "nominas"]:
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS images_{doc_type} (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        filename TEXT NOT NULL UNIQUE,
+                        content BLOB NOT NULL,
+                        size INTEGER NOT NULL,
+                        mime_type TEXT NOT NULL,
+                        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            
+            # Create PDF conversion history table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pdf_conversion_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    filename TEXT NOT NULL,
+                    pages INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    file_size TEXT NOT NULL,
+                    document_type TEXT NOT NULL
+                )
+            """)
+            
+            conn.commit()
+        
+    except Exception as e:
+        logger.error(f"Error initializing image tables: {str(e)}")
+        raise
+
+def process_pdf_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
+    """Convert a PDF file to PNG images using pdf2image
+    
+    Args:
+        pdf_path: Path to the PDF file
+        output_dir: Directory to save PNG files
+        
+    Returns:
+        List of paths to generated PNG files
+    """
+    from pdf2image import convert_from_path
+    import PyPDF2
+    import math
+    
+    # Constants
+    MAX_PAGES_PER_CHUNK = 100
+    
+    output_files = []
+    
+    try:
+        # Ensure output directory exists
+        output_dir.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Converting PDF {pdf_path} to PNGs in {output_dir}")
+        
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            total_pages = len(pdf_reader.pages)
+            base_filename = pdf_path.stem
+            
+            # For large PDFs, process in chunks
+            if total_pages > MAX_PAGES_PER_CHUNK:
+                chunk_temp_dir = Path("temp_pdf_chunks")
+                chunk_temp_dir.mkdir(exist_ok=True)
+                
+                num_chunks = math.ceil(total_pages / MAX_PAGES_PER_CHUNK)
+                
+                for chunk in range(num_chunks):
+                    start_page = chunk * MAX_PAGES_PER_CHUNK
+                    end_page = min((chunk + 1) * MAX_PAGES_PER_CHUNK, total_pages)
+                    
+                    pdf_writer = PyPDF2.PdfWriter()
+                    
+                    # Add pages for this chunk
+                    for page_num in range(start_page, end_page):
+                        pdf_writer.add_page(pdf_reader.pages[page_num])
+                    
+                    # Generate output filename
+                    chunk_filename = f"{base_filename}_part{chunk + 1}.pdf"
+                    chunk_path = chunk_temp_dir / chunk_filename
+                    
+                    # Save the chunk
+                    with open(chunk_path, 'wb') as output_file:
+                        pdf_writer.write(output_file)
+                    
+                    # Convert chunk to images
+                    images = convert_from_path(chunk_path)
+                    
+                    # Save images
+                    for i, image in enumerate(images, start_page + 1):
+                        output_filename = f"{base_filename}({i}).png"
+                        output_path = output_dir / output_filename
+                        image.save(output_path, "PNG")
+                        output_files.append(output_path)
+                    
+                    # Clean up chunk
+                    chunk_path.unlink(missing_ok=True)
+                
+                # Clean up chunk directory
+                if chunk_temp_dir.exists() and not any(chunk_temp_dir.iterdir()):
+                    chunk_temp_dir.rmdir()
+            else:
+                # For smaller PDFs, convert directly
+                images = convert_from_path(pdf_path)
+                
+                # Save images
+                for i, image in enumerate(images, 1):
+                    output_filename = f"{base_filename}({i}).png"
+                    output_path = output_dir / output_filename
+                    image.save(output_path, "PNG")
+                    output_files.append(output_path)
+        
+        return output_files
+        
+    except Exception as e:
+        logger.error(f"Error converting PDF {pdf_path}: {str(e)}")
+        raise
+
+@app.get("/excel/test-download")
+async def test_download_excel():
+    """Test endpoint for Excel download with minimal functionality"""
+    try:
+        # Create a simple DataFrame
+        test_df = pd.DataFrame({
+            'Column1': ['Test1', 'Test2', 'Test3'],
+            'Column2': [1, 2, 3],
+            'Column3': [4.5, 5.5, 6.5]
+        })
+        
+        # Create Excel file in memory
+        excel_file = BytesIO()
+        with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+            test_df.to_excel(writer, sheet_name='TestSheet', index=False)
+        
+        excel_file.seek(0)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"test_{timestamp}.xlsx"
+        
+        return Response(
+            content=excel_file.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def save_pdf_conversion_history(history_data: dict):
+    """Save PDF conversion history to database
+    
+    Args:
+        history_data: Dictionary containing history metadata
+    """
+    try:
+        # Create tables if they don't exist
+        await init_image_tables()
+        
+        # Extract required fields
+        filename = history_data.get("filename", "")
+        pages = history_data.get("pages", 0)
+        status = history_data.get("status", "Unknown")
+        file_size = history_data.get("file_size", "0 KB")
+        document_type = history_data.get("document_type", "General")
+        
+        # Connect to database
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Insert into database
+            cursor.execute("""
+                INSERT INTO pdf_conversion_history 
+                (filename, pages, status, file_size, document_type)
+                VALUES (?, ?, ?, ?, ?)
+            """, (filename, pages, status, file_size, document_type))
+            
+            conn.commit()
+            
+        logger.info(f"Saved PDF conversion history for {filename}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error saving PDF conversion history: {str(e)}")
+        return False
+
+async def get_pdf_conversion_history():
+    """Get PDF conversion history from database
+    
+    Returns:
+        List of PDF conversion history records
+    """
+    try:
+        # Create tables if they don't exist
+        await init_image_tables()
+        
+        # Connect to database
+        with sqlite3.connect(DB_PATH) as conn:
+            # Configure connection to return rows as dictionaries
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get history records
+            cursor.execute("""
+                SELECT * FROM pdf_conversion_history 
+                ORDER BY timestamp DESC
+            """)
+            
+            # Convert to list of dictionaries
+            history = [dict(row) for row in cursor.fetchall()]
+            
+        return history
+        
+    except Exception as e:
+        logger.error(f"Error getting PDF conversion history: {str(e)}")
+        return []
+
+async def clear_pdf_conversion_history():
+    """Clear all PDF conversion history records from database
+    
+    Returns:
+        Boolean indicating success or failure
+    """
+    try:
+        # Connect to database
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Delete all history records
+            cursor.execute("DELETE FROM pdf_conversion_history")
+            
+            conn.commit()
+        
+        logger.info("Cleared PDF conversion history")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error clearing PDF conversion history: {str(e)}")
+        return False
+
+async def delete_pdf_conversion_record(record_id: int):
+    """Delete a single PDF conversion history record from database
+    
+    Args:
+        record_id: ID of the record to delete
+        
+    Returns:
+        Boolean indicating success or failure
+    """
+    try:
+        # Connect to database
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Check if record exists
+            cursor.execute("SELECT id FROM pdf_conversion_history WHERE id = ?", (record_id,))
+            if not cursor.fetchone():
+                logger.warning(f"PDF conversion record with ID {record_id} not found")
+                return False
+            
+            # Delete the record
+            cursor.execute("DELETE FROM pdf_conversion_history WHERE id = ?", (record_id,))
+            
+            conn.commit()
+        
+        logger.info(f"Deleted PDF conversion history record with ID {record_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error deleting PDF conversion history record: {str(e)}")
+        return False
+
+@app.post("/pdf/history/save")
+async def save_conversion_history(history_data: dict):
+    """Save PDF conversion history to database"""
+    try:
+        result = await save_pdf_conversion_history(history_data)
+        if result:
+            return {"success": True, "message": "Conversion history saved"}
+        else:
+            return {"success": False, "message": "Failed to save conversion history"}
+    except Exception as e:
+        logger.error(f"Error saving conversion history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/pdf/history")
+async def get_conversion_history():
+    """Get PDF conversion history from database"""
+    try:
+        history = await get_pdf_conversion_history()
+        return history
+    except Exception as e:
+        logger.error(f"Error getting conversion history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/pdf/history/clear")
+async def clear_conversion_history():
+    """Clear all PDF conversion history from database"""
+    try:
+        result = await clear_pdf_conversion_history()
+        if result:
+            return {"success": True, "message": "Conversion history cleared"}
+        else:
+            return {"success": False, "message": "Failed to clear conversion history"}
+    except Exception as e:
+        logger.error(f"Error clearing conversion history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/pdf/history/{record_id}")
+async def delete_conversion_record(record_id: int):
+    """Delete a single PDF conversion history record by ID"""
+    try:
+        result = await delete_pdf_conversion_record(record_id)
+        if result:
+            return {"success": True, "message": f"Record {record_id} deleted successfully"}
+        else:
+            return {"success": False, "message": f"Record {record_id} not found or could not be deleted"}
+    except Exception as e:
+        logger.error(f"Error deleting conversion record: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/images/{doc_type}/download/{filename}")
+async def download_image(doc_type: Literal["facturas", "pagos", "nominas"], filename: str):
+    """Download a single converted PNG image"""
+    try:
+        # Construct file path
+        file_path = IMAGES_DIR / doc_type / filename
+        
+        # Check if file exists in filesystem
+        if file_path.exists():
+            return Response(
+                content=file_path.read_bytes(),
+                media_type="image/png",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}"
+                }
+            )
+        
+        # If not in filesystem, try to get from database
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT content, mime_type FROM images_{doc_type} WHERE filename = ?", (filename,))
+            row = cursor.fetchone()
+            
+            if row and row[0]:
+                content, mime_type = row
+                return Response(
+                    content=content,
+                    media_type=mime_type or "image/png",
+                    headers={
+                        "Content-Disposition": f"attachment; filename={filename}"
+                    }
+                )
+            
+        raise HTTPException(status_code=404, detail=f"Image {filename} not found")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/images/{doc_type}/download-all")
+async def download_all_images(doc_type: Literal["facturas", "pagos", "nominas"]):
+    """Download all converted images as a ZIP archive"""
+    try:
+        # Create in-memory ZIP file
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Try filesystem first
+            images_dir = IMAGES_DIR / doc_type
+            if images_dir.exists():
+                for file_path in images_dir.glob("*.png"):
+                    zip_file.write(file_path, file_path.name)
+            
+            # Also check database
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT filename, content FROM images_{doc_type}")
+                
+                for filename, content in cursor.fetchall():
+                    if content:  # Only add if content exists
+                        zip_file.writestr(filename, content)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"converted_images_{doc_type}_{timestamp}.zip"
+        
+        # Set buffer position to start
+        zip_buffer.seek(0)
+        
+        return Response(
+            content=zip_buffer.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={zip_filename}"
+            }
+        )
+        
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

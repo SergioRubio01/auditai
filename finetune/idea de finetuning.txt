@@ -1,0 +1,12 @@
+## Idea de arquitectura de agentes para ajuste automático de parámetros
+
+- Problema: No existe una forma automática de ajustar un modelo LLM de pagos.
+La manera manual es tediosa y requiere de mucho tiempo. Automatizar este proceso
+haría que, a la hora de crear un modelo para unos datos específicos, el proceso fuese
+rápido y liviano, permitiendo al humano realizar las tareas que realmente
+competen a su puesto de trabajo.
+
+- Solución: Crear una arquitectura de agentes que entrenen un modelo de manera
+automática en función de las necesidades del usuario para unos datos en específico
+proporcionados por el usuario.
+

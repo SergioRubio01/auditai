@@ -19,92 +19,30 @@ from ..models import AgentState
 from ..routes import router
 from ..utils import agent_node, nomina_post, generate_textract, nomina_table_post
 from ..utils.create_agent import create_agent
-from ..utils.llm import llm14, llm13
+from ..utils.llm import llm14, llm13, llm15, llm4, llm3, llm16
 
 table_format_agent = create_agent(
     llm14,
     tools=[],
-    system_message="""You are a helpful assistant that formats tables extracted from the textract_agent. 
-    
-    You will receive a JSON with rows containing CONCEPTO, UNIDADES, and IMPORTE fields. Your task is to validate and return the same JSON structure, ensuring all required fields are present.
+    system_message="""You are a helpful assistant that formats tables. 
+        You receive DESCRIPCION, DEVENGOS, and DEDUCCIONES fields.
+        
+        Expected output:
+        {"fila 1": {"DESCRIPCION": "101 -SALARIO MES", "DEVENGOS": "2717,94", "DEDUCCIONES": ""}, "fila 2": {"DESCRIPCION": "150-ANTIGUEDAD", "DEVENGOS": "146,82", "DEDUCCIONES": ""}, "fila 3": {"DESCRIPCION": "203-COMPLEMENTO", "DEVENGOS": "900,00", "DEDUCCIONES": ""}, "fila 4": {"DESCRIPCION": "205-GRATIFICACION", "DEVENGOS": "400,00", "DEDUCCIONES": ""}}
 
-    Output example:
-    {
-        "rows": [
-            {
-                "DESCRIPCION": "Diseño y desarrollo de plan de contenidos",
-                "IMPORTE_UNIDAD": "",
-                "UNIDAD": "521,78",
-                "DEVENGOS": "23,8",
-                "DEDUCCIONES": "12,3"
-            }
-        ]
-    }
-
-    1. For DESCRIPCION: Use the full description, combining related fields if split
-    2. For IMPORTE_UNIDAD: Ensure it's a numeric string, remove currency symbols if present
-    3. For UNIDAD: Keep as is, use empty string if not present
-    4. For DEVENGOS: Ensure it's a numeric string, remove currency symbols if present
-    5. For DEDUCCIONES: Ensure it's a numeric string, remove currency symbols if present
+        1. For DESCRIPCION: Do NOT combine the fields, just keep the original description.
+        2. For DEVENGOS: Ensure it's a numeric string, remove currency symbols if present
+        3. For DEDUCCIONES: Ensure it's a numeric string, remove currency symbols if present
+        4. If a row has DEDUCCIONES, then DEVENGOS should be 0 and vice versa.
+        5. If a row has no DEVENGOS nor DEDUCCIONES, then it should be removed.
     """
 )
 
 retrieval_nominas_agent = create_agent(
-    llm13,
+    llm16,
     tools=[],
     system_message="""You are a helpful assistant that extracts data from images of payrolls and provides the data in a structured format.
-    All available information is in the image.
-    
-    - MES: The month of the payroll
-    - FECHA_INICIO: The start date of the payroll
-    - FECHA_FIN: The end date of the payroll
-    - CIF: The CIF name of the client (usually labelled after the word CIF. Its format usually contains a letter and 8 numbers)
-    - TRABAJADOR: The name of the worker the CIF_TRABAJADOR is referring to
-    - NAF: The number of the worker
-    - NIF: The NIF of the worker
-    - CATEGORIA: The category of the worker
-    - ANTIGUEDAD: The years of experience of the worker
-    - CONTRATO: The type of contract of the worker
-    - TOTAL_DEVENGOS: The total of the devengos of the worker
-    - TOTAL_DEDUCCIONES: The total of the deducciones of the worker
-    - ABSENTISMOS: The total of the absentismos of the worker
-    - BC_TEORICA: The base of the worker
-    - PRORRATA: The prorata of the worker
-    - BC_CON_COMPLEMENTOS: The base of the worker with the complementos
-    - TOTAL_SEG_SOCIAL: The total of the social security of the worker
-    - BONIFICACIONES_SS_TRABAJADOR: The bonifications of the social security of the worker
-    - TOTAL_RETENCIONES: The total of the retentions of the worker
-    - TOTAL_RETENCIONES_SS: The total of the retentions of the social security of the worker
-    - LIQUIDO_A_PERCIBIR: The total of the liquid to be received of the worker
-    - A_ABONAR: The total of the money to be paid of the worker
-    - TOTAL_CUOTA_EMPRESARIAL: The total of the company's social security quota
-     
-    Expected output:
-    { 
-        "MES": "<text>",
-        "FECHA_INICIO": "<text>",
-        "FECHA_FIN": "<text>",
-        "CIF": "<text>",
-        "TRABAJADOR": "<text>",
-        "NAF": "<text>",
-        "NIF": "<text>",
-        "CATEGORIA": "<text>",
-        "ANTIGUEDAD": "<text>",
-        "CONTRATO": "<text>",
-        "TOTAL_DEVENGOS": "<text>",
-        "TOTAL_DEDUCCIONES": "<text>",
-        "ABSENTISMOS": "<text>",
-        "BC_TEORICA": "<text>",
-        "PRORRATA": "<text>",
-        "BC_CON_COMPLEMENTOS": "<text>",
-        "TOTAL_SEG_SOCIAL": "<text>",
-        "BONIFICACIONES_SS_TRABAJADOR": "<text>",
-        "TOTAL_RETENCIONES": "<text>",
-        "TOTAL_RETENCIONES_SS": "<text>",
-        "LIQUIDO_A_PERCIBIR": "<text>",
-        "A_ABONAR": "<text>",
-        "TOTAL_CUOTA_EMPRESARIAL": "<text>",
-    }
+    CIF is generally present as C.I.F. or CIF, and starts with a letter, not a number.
    """
 )
 
@@ -136,7 +74,7 @@ workflow_nominas.add_conditional_edges("table_format_agent", router, {
 
 workflow_nominas.add_conditional_edges("table_upload", router, {
     "continue": "table_format_agent",
-    END: "retrieval_nominas_agent"
+    END: END
 })
 
 workflow_nominas.add_conditional_edges("retrieval_nominas_agent", router, {

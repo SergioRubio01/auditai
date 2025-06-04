@@ -17,12 +17,12 @@ import os
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_core.messages import HumanMessage
-import logging
 from .utils import encode_image
 from .workflowmanager import WorkflowManager
 import uuid
 from pathlib import Path
 import asyncio
+import logging
 
 # Configure logging
 logging.basicConfig(
@@ -39,31 +39,15 @@ async def process_single_batch(
     image_directory: str,
     excel_filename: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Process a single batch of related images.
-    
-    Args:
-        `image_paths`: List of image paths to process
-        `image_directory`: Directory containing the images
-        `excel_filename`: Optional name of the Excel file to save results
-    
-    Returns:
-        Dict containing processing results and status
-    """
     try:
-        # Add a semaphore or lock to prevent multiple executions
         async with processing_lock:
-            # Process the image only once
             result = await process_single_image_internal(image_paths, image_directory)
             if result.get("status") == "success":
-                logger.info(f"Successfully processed {image_paths[0]}")
                 return result
             else:
-                logger.error(f"Failed to process {image_paths[0]}: {result.get('message')}")
                 return result
                 
     except Exception as e:
-        logger.error(f"Error in process_single_batch: {str(e)}")
         return {
             "status": "error",
             "message": str(e)
@@ -74,19 +58,7 @@ async def process_single_image_internal(
     image_directory: str,
     workflow_type: str
 ) -> Dict[str, Any]:
-    """
-    Process a single image.
-    
-    Args:
-        image_paths: List of image paths to process
-        image_directory: Directory containing the images
-        workflow_type: Type of workflow to use ('facturas' or 'pagos' )
-    
-    Returns:
-        Dict containing processing results and status
-    """
     try:
-        # Create message content with all matching images
         message_content = []
         for image_path in image_paths:
             full_path = os.path.join(image_directory, image_path).replace('\\', '/')
@@ -99,7 +71,6 @@ async def process_single_image_internal(
                     }
                 })
             except Exception as e:
-                logger.error(f"Error processing image {image_path}: {str(e)}")
                 continue
 
         if not message_content:
@@ -109,47 +80,40 @@ async def process_single_image_internal(
                 "workflow_type": workflow_type
             }
 
-        # Initialize the results list
         results = []
-        
-        # Initialize the graph with specified workflow type
         graph = WorkflowManager().get_graph(workflow_type)
         
-        # Pass the filename in the state for the workflow to use
         async for event in graph.astream(
             {
                 "messages": [HumanMessage(content=message_content)],
-                "filename": image_path,
+                "filename": image_paths[0],
                 "workflowtype": workflow_type,
-                "factura":"",
-                "tablafacturas":"",
-                "tablatarjetas":"",
-                "transferencia":"",
-                "tarjeta":"",
-                "nomina":"",
-                "tablanominas":""
+                "factura": "",
+                "tablafacturas": "",
+                "tablatarjetas": "",
+                "transferencia": "",
+                "tarjeta": "",
+                "nomina": "",
+                "tablanominas": ""
             },
             config={"recursion_limit": 30}
         ):
-            logger.info(f"Processing event in {workflow_type} workflow: {event}")
             results.append(event)
-        
+
         return {
             "status": "success",
-            # "messages": results[-1]["supervisor_agent"]["messages"] if results else [],
             "image_paths": image_paths,
             "workflow_type": workflow_type,
-            "factura":"",
-            "tablafacturas":"",
-            "tablatarjetas":"",
-            "tarjeta":"",
-            "transferencia":"",
-            "nomina":"",
-            "tablanominas":""
+            "factura": "",
+            "tablafacturas": "",
+            "tablatarjetas": "",
+            "tarjeta": "",
+            "transferencia": "",
+            "nomina": "",
+            "tablanominas": ""
         }
         
     except Exception as e:
-        logger.error(f"Error processing image in {workflow_type} workflow: {str(e)}")
         return {
             "status": "error",
             "message": str(e),

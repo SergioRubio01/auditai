@@ -371,8 +371,8 @@ def factura_post(state: AgentState) -> AgentState:
 def nomina_post(state: AgentState) -> AgentState:
     """Post a nomina to the database."""
     try:
-        filename = Path(state['filename']).stem
-        nomina_json = state['nomina']  # This is a JSON string
+        filename = state.get('filename', '')
+        nomina_json = state.get('nomina', '')  # This is a JSON string
         print(f"\n\nNomina ==== {nomina_json}\n\n")
         
         if not nomina_json:
@@ -386,7 +386,11 @@ def nomina_post(state: AgentState) -> AgentState:
         
         # Parse the JSON string into a dictionary
         try:
-            nomina = json.loads(nomina_json)
+            # If it's already a dict, use it directly
+            if isinstance(nomina_json, dict):
+                nomina = nomina_json
+            else:
+                nomina = json.loads(nomina_json)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse nomina JSON: {str(e)}")
             return {
@@ -396,43 +400,65 @@ def nomina_post(state: AgentState) -> AgentState:
                 "filename": filename,
                 "workflowtype": state.get('workflowtype')
             }
-            
+        
+        # Validate required fields exist, fill with defaults if missing
+        required_fields = ["MES", "FECHA_INICIO", "FECHA_FIN", "CIF", "TRABAJADOR", "NAF", "NIF", 
+                         "CATEGORIA", "ANTIGUEDAD", "CONTRATO", "TOTAL_DEVENGOS", "TOTAL_DEDUCCIONES"]
+        
+        for field in required_fields:
+            if field not in nomina or nomina[field] is None:
+                nomina[field] = ""
+                logger.warning(f"Missing required field in nomina: {field}, using empty string")
+        
         # Insert into database
         with sqlite3.connect(os.getenv("DB_PATH", "./database/database.db")) as conn:
             cursor = conn.cursor()
+            
+            # Delete existing record for this document to avoid duplicates
+            cursor.execute("DELETE FROM nominas WHERE id_documento = ?", (filename,))
+            
             cursor.execute("""
                 INSERT INTO nominas
-                (id_documento, mes, fecha_inicio, fecha_fin, cif, trabajador, naf, nif, categoria, antiguedad, contrato, total_devengos, total_deducciones, absentismos, bc_teorica, prorrata, bc_con_complementos, total_seg_social, bonificaciones_ss_trabajador, total_retenciones, total_retenciones_ss, liquido_a_percibir, a_abonar, total_cuota_empresarial)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id_documento, mes, fecha_inicio, fecha_fin, cif, trabajador, naf, nif, categoria, 
+                antiguedad, contrato, total_devengos, total_deducciones, absentismos, bc_teorica, 
+                prorrata, bc_con_complementos, total_seg_social, bonificaciones_ss_trabajador, 
+                total_retenciones, total_retenciones_ss, liquido_a_percibir, a_abonar, 
+                total_cuota_empresarial, comments)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 filename,
-                nomina["MES"],
-                nomina["FECHA_INICIO"],
-                nomina["FECHA_FIN"],
-                nomina["CIF"],
-                nomina["TRABAJADOR"],
-                nomina["NAF"],
-                nomina["NIF"],
-                nomina["CATEGORIA"],
-                nomina["ANTIGUEDAD"],
-                nomina["CONTRATO"],
-                nomina["TOTAL_DEVENGOS"],
-                nomina["TOTAL_DEDUCCIONES"],
-                nomina["ABSENTISMOS"],
-                nomina["BC_TEORICA"],
-                nomina["PRORRATA"],
-                nomina["BC_CON_COMPLEMENTOS"],
-                nomina["TOTAL_SEG_SOCIAL"],
-                nomina["BONIFICACIONES_SS_TRABAJADOR"],
-                nomina["TOTAL_RETENCIONES"],
-                nomina["TOTAL_RETENCIONES_SS"],
-                nomina["LIQUIDO_A_PERCIBIR"],
-                nomina["A_ABONAR"],
-                nomina["TOTAL_CUOTA_EMPRESARIAL"]
+                nomina.get("MES", ""),
+                nomina.get("FECHA_INICIO", ""),
+                nomina.get("FECHA_FIN", ""),
+                nomina.get("CIF", ""),
+                nomina.get("TRABAJADOR", ""),
+                nomina.get("NAF", ""),
+                nomina.get("NIF", ""),
+                nomina.get("CATEGORIA", ""),
+                nomina.get("ANTIGUEDAD", ""),
+                nomina.get("CONTRATO", ""),
+                nomina.get("TOTAL_DEVENGOS", ""),
+                nomina.get("TOTAL_DEDUCCIONES", ""),
+                nomina.get("ABSENTISMOS", ""),
+                nomina.get("BC_TEORICA", ""),
+                nomina.get("PRORRATA", ""),
+                nomina.get("BC_CON_COMPLEMENTOS", ""),
+                nomina.get("TOTAL_SEG_SOCIAL", ""),
+                nomina.get("BONIFICACIONES_SS_TRABAJADOR", ""),
+                nomina.get("TOTAL_RETENCIONES", ""),
+                nomina.get("TOTAL_RETENCIONES_SS", ""),
+                nomina.get("LIQUIDO_A_PERCIBIR", ""),
+                nomina.get("A_ABONAR", ""),
+                nomina.get("TOTAL_CUOTA_EMPRESARIAL", ""),
+                nomina.get('COMMENTS', '')
             ))
             conn.commit()
             
-        # Return updated state
+            # Verify data was inserted
+            cursor.execute("SELECT COUNT(*) FROM nominas WHERE id_documento = ?", (filename,))
+            count = cursor.fetchone()[0]
+            logger.info(f"Inserted {count} nomina record for document {filename}")
+            
         new_state = state.copy()
         new_state.update({
             "messages": [AIMessage(content="FINAL ANSWER")],
@@ -442,15 +468,14 @@ def nomina_post(state: AgentState) -> AgentState:
             "workflowtype": state.get('workflowtype')
         })
         return new_state
-            
 
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error in nomina_post: {str(e)}")
         return {
             "status": "error",
             "message": str(e),
             "sender": "nomina_post",
-            "filename": filename,
+            "filename": filename if 'filename' in locals() else "",
             "workflowtype": state.get('workflowtype')
         }
 
@@ -692,8 +717,9 @@ def factura_table_post(state: AgentState) -> AgentState:
 def nomina_table_post(state: AgentState) -> AgentState:
     """Post a table of nominas to the database."""
     try:
+        # Get the full filename from state
         filename = Path(state['filename']).stem
-        tabla_json = state['tablanominas']  # This is a JSON string
+        tabla_json = state['tablanominas']
         print(f"\n\nTabla Nomina ==== {tabla_json}\n\n")
         
         if not tabla_json:
@@ -722,26 +748,22 @@ def nomina_table_post(state: AgentState) -> AgentState:
         with sqlite3.connect(os.getenv("DB_PATH", "./database/database.db")) as conn:
             cursor = conn.cursor()
             
-            # Iterate through all items in the dictionary
             for row_key, row_data in tabla.items():
-                if not row_key.startswith('fila'):  # Skip any non-row entries
+                if not row_key.startswith('fila'):
                     continue
                     
                 cursor.execute("""
                     INSERT INTO nominas_tabla
-                    (id_documento, descripcion, importe_unidad, unidad, devengos, deducciones)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (id_documento, descripcion, devengos, deducciones)
+                    VALUES (?, ?, ?, ?)
                 """, (
                     filename,
                     row_data["DESCRIPCION"],
-                    row_data["IMPORTE_UNIDAD"] if row_data["IMPORTE_UNIDAD"] is not None else "",
-                    row_data["UNIDAD"] if row_data["UNIDAD"] is not None else "",
                     row_data["DEVENGOS"] if row_data["DEVENGOS"] is not None else "",
                     row_data["DEDUCCIONES"] if row_data["DEDUCCIONES"] is not None else ""
                 ))
             conn.commit()
             
-        # Return updated state
         new_state = state.copy()
         new_state.update({
             "messages": [AIMessage(content="FINAL ANSWER")],
@@ -751,7 +773,6 @@ def nomina_table_post(state: AgentState) -> AgentState:
             "workflowtype": state.get('workflowtype')
         })
         return new_state
-            
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")

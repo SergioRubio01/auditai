@@ -1,0 +1,501 @@
+Directory structure:
+└── infrastructure/
+    ├── bootstrap.ps1
+    ├── cdk-deployment-policy.json
+    ├── cdk.context.json
+    ├── cdk.json
+    ├── check-deployment.ps1
+    ├── check-status.ps1
+    ├── deploy.ps1
+    ├── docker-login.ps1
+    ├── package.json
+    ├── setup-permissions.ps1
+    ├── tsconfig.json
+    ├── bin/
+    │   └── app.ts
+    └── lib/
+        └── auto-audit-stack.ts
+
+================================================
+File: bootstrap.ps1
+================================================
+$account = aws sts get-caller-identity --query Account --output text
+$region = "eu-west-3"
+Write-Host "Bootstrapping CDK for account: $account in region: $region"
+npx cdk bootstrap "aws://$account/$region" 
+
+
+================================================
+File: cdk-deployment-policy.json
+================================================
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:*",
+                "ecr:*",
+                "ecs:*",
+                "ec2:*",
+                "elasticloadbalancing:*",
+                "elasticache:*",
+                "logs:*",
+                "iam:*",
+                "ssm:*",
+                "s3:*"
+            ],
+            "Resource": "*"
+        }
+    ]
+} 
+
+
+================================================
+File: cdk.context.json
+================================================
+{
+  "availability-zones:account=533267139503:region=eu-west-3": [
+    "eu-west-3a",
+    "eu-west-3b",
+    "eu-west-3c"
+  ]
+}
+
+
+
+================================================
+File: cdk.json
+================================================
+{
+  "app": "npx ts-node --prefer-ts-exts bin/app.ts",
+  "watch": {
+    "include": [
+      "**"
+    ],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "**/*.d.ts",
+      "**/*.js",
+      "tsconfig.json",
+      "package*.json",
+      "yarn.lock",
+      "node_modules",
+      "test"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": [
+      "aws",
+      "aws-cn"
+    ],
+    "@aws-cdk-containers/ecs-service-extensions:enableDefaultLogDriver": true,
+    "@aws-cdk/aws-ec2:uniqueImdsv2TemplateName": true,
+    "@aws-cdk/aws-ecs:arnFormatIncludesClusterName": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:validateSnapshotRemovalPolicy": true,
+    "@aws-cdk/aws-codepipeline:crossAccountKeyAliasStackSafeResourceName": true,
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
+    "@aws-cdk/aws-sns-subscriptions:restrictSqsDescryption": true,
+    "@aws-cdk/aws-apigateway:disableCloudWatchRole": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-events:eventsTargetQueueSameAccount": true,
+    "@aws-cdk/aws-iam:standardizedServicePrincipals": true,
+    "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
+    "@aws-cdk/aws-iam:importedRoleStackSafeDefaultPolicyName": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/aws-route53-patters:useCertificate": true,
+    "@aws-cdk/customresources:installLatestAwsSdkDefault": false,
+    "@aws-cdk/aws-rds:databaseProxyUniqueResourceName": true,
+    "@aws-cdk/aws-codedeploy:removeAlarmsFromDeploymentGroup": true,
+    "@aws-cdk/aws-apigateway:authorizerChangeDeploymentLogicalId": true,
+    "@aws-cdk/aws-ec2:launchTemplateDefaultUserData": true,
+    "@aws-cdk/aws-secretsmanager:useAttachedSecretResourcePolicyForSecretTargetAttachments": true,
+    "@aws-cdk/aws-redshift:columnId": true,
+    "@aws-cdk/aws-stepfunctions-tasks:enableEmrServicePolicyV2": true,
+    "@aws-cdk/aws-ec2:restrictDefaultSecurityGroup": true,
+    "@aws-cdk/aws-apigateway:requestValidatorUniqueId": true
+  }
+} 
+
+
+================================================
+File: check-deployment.ps1
+================================================
+# Check CloudFormation stack status
+Write-Host "Checking CloudFormation stack status..."
+$stackStatus = aws cloudformation describe-stacks --stack-name AutoAuditStack --query 'Stacks[0].StackStatus' --output text
+Write-Host "Stack Status: $stackStatus"
+
+if ($stackStatus -eq "CREATE_COMPLETE") {
+    # Get the Load Balancer DNS
+    Write-Host "`nGetting Load Balancer DNS..."
+    $lbDns = aws cloudformation describe-stacks --stack-name AutoAuditStack --query 'Stacks[0].Outputs[?OutputKey==`LoadBalancerDNS`].OutputValue' --output text
+    
+    Write-Host "`nYour application endpoints:"
+    Write-Host "API (FastAPI): http://$lbDns/"
+    Write-Host "Dashboard (Streamlit): http://$lbDns:8501/"
+    
+    # Check ECS service status
+    Write-Host "`nChecking ECS service status..."
+    $cluster = "auto-audit-cluster"
+    $services = aws ecs list-services --cluster $cluster --query 'serviceArns[]' --output text
+    
+    if ($services) {
+        foreach ($service in $services.Split()) {
+            $serviceStatus = aws ecs describe-services --cluster $cluster --services $service --query 'services[0].status' --output text
+            Write-Host "ECS Service Status: $serviceStatus"
+        }
+    } else {
+        Write-Host "No ECS services found in cluster $cluster"
+    }
+} else {
+    Write-Host "Stack is not ready yet. Current status: $stackStatus"
+    Write-Host "Please wait for the stack to complete deployment."
+} 
+
+
+================================================
+File: check-status.ps1
+================================================
+# Get stack status
+$stack = aws cloudformation describe-stacks --stack-name AutoAuditStack --output json | ConvertFrom-Json
+Write-Host "Stack Status: $($stack.Stacks[0].StackStatus)"
+
+# Get recent events
+Write-Host "`nRecent Events:"
+$events = aws cloudformation describe-stack-events --stack-name AutoAuditStack --output json | ConvertFrom-Json
+$events.StackEvents | Select-Object -First 5 | ForEach-Object {
+    Write-Host "Resource: $($_.LogicalResourceId)"
+    Write-Host "Status: $($_.ResourceStatus)"
+    if ($_.ResourceStatusReason) {
+        Write-Host "Reason: $($_.ResourceStatusReason)"
+    }
+    Write-Host "---"
+} 
+
+
+================================================
+File: deploy.ps1
+================================================
+# Install dependencies
+Write-Host "Installing dependencies..."
+npm install
+
+# Build the TypeScript code
+Write-Host "Building TypeScript code..."
+npm run build
+
+# Get AWS account ID
+$account = aws sts get-caller-identity --query Account --output text
+$region = "eu-west-3"
+
+Write-Host "Bootstrapping CDK for account: $account in region: $region"
+npx cdk bootstrap "aws://$account/$region"
+
+Write-Host "Deploying stack..."
+npx cdk deploy --require-approval never 
+
+
+================================================
+File: docker-login.ps1
+================================================
+# Get the ECR password
+$ecrPassword = aws ecr get-login-password --region eu-west-3
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Failed to get ECR password"
+    exit 1
+}
+
+# Login to ECR
+$ecrPassword | docker login --username AWS --password-stdin 533267139503.dkr.ecr.eu-west-3.amazonaws.com
+
+# Build the image
+Write-Host "Building Docker image..."
+docker build -t auto-audit ..
+
+# Tag the image
+Write-Host "Tagging image..."
+docker tag auto-audit:latest 533267139503.dkr.ecr.eu-west-3.amazonaws.com/auto-audit:latest
+
+# Push to ECR
+Write-Host "Pushing image to ECR..."
+docker push 533267139503.dkr.ecr.eu-west-3.amazonaws.com/auto-audit:latest 
+
+
+================================================
+File: package.json
+================================================
+{
+  "name": "infrastructure",
+  "version": "1.0.0",
+  "description": "AWS CDK Infrastructure for Auto Audit",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "synth": "cdk synth"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "aws-cdk": "^2.130.0",
+    "aws-cdk-lib": "^2.130.0",
+    "constructs": "^10.3.0",
+    "typescript": "^5.3.3"
+  }
+}
+
+
+
+================================================
+File: setup-permissions.ps1
+================================================
+# Attach required AWS managed policies to the textract-user
+Write-Host "Attaching required policies to textract-user..."
+
+# Try to attach CloudFormation and IAM policies first
+$essentialPolicies = @(
+    "arn:aws:iam::aws:policy/AWSCloudFormationFullAccess",
+    "arn:aws:iam::aws:policy/IAMFullAccess"
+)
+
+foreach ($policy in $essentialPolicies) {
+    Write-Host "Attaching policy: $policy"
+    aws iam attach-user-policy --user-name textract-user --policy-arn $policy
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Failed to attach policy: $policy"
+        Write-Host "Please ask your AWS administrator to grant you these permissions."
+        exit 1
+    }
+}
+
+Write-Host "Basic permissions attached. Please wait a few minutes for the permissions to propagate."
+Write-Host "Then run .\deploy.ps1 again." 
+
+
+================================================
+File: tsconfig.json
+================================================
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["es2020"],
+    "declaration": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": false,
+    "inlineSourceMap": true,
+    "inlineSources": true,
+    "experimentalDecorators": true,
+    "strictPropertyInitialization": false,
+    "typeRoots": ["./node_modules/@types"],
+    "outDir": "dist"
+  },
+  "exclude": ["node_modules", "cdk.out"]
+} 
+
+
+================================================
+File: bin/app.ts
+================================================
+#!/usr/bin/env node
+import * as cdk from 'aws-cdk-lib';
+import { AutoAuditStack } from '../lib/auto-audit-stack';
+
+const app = new cdk.App();
+new AutoAuditStack(app, 'AutoAuditStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'eu-west-3',
+  },
+}); 
+
+
+================================================
+File: lib/auto-audit-stack.ts
+================================================
+import * as cdk from 'aws-cdk-lib';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as elasticache from 'aws-cdk-lib/aws-elasticache';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import { Construct } from 'constructs';
+
+export class AutoAuditStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create VPC
+    const vpc = new ec2.Vpc(this, 'AutoAuditVPC', {
+      maxAzs: 2,
+      natGateways: 1,
+    });
+
+    // Create ECR Repository
+    const repository = new ecr.Repository(this, 'AutoAuditRepo', {
+      repositoryName: 'auto-audit',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      imageScanOnPush: true,
+    });
+
+    // Create ECS Cluster
+    const cluster = new ecs.Cluster(this, 'AutoAuditCluster', {
+      vpc,
+      clusterName: 'auto-audit-cluster',
+    });
+
+    // Create Redis Subnet Group
+    const redisSubnetGroup = new elasticache.CfnSubnetGroup(this, 'RedisSubnetGroup', {
+      subnetIds: vpc.privateSubnets.map((subnet) => subnet.subnetId),
+      description: 'Subnet group for Redis cache',
+    });
+
+    // Create Redis Security Group
+    const redisSecurityGroup = new ec2.SecurityGroup(this, 'RedisSecurityGroup', {
+      vpc,
+      description: 'Security group for Redis cache',
+      allowAllOutbound: true,
+    });
+
+    // Create Redis Cluster
+    const redis = new elasticache.CfnCacheCluster(this, 'RedisCluster', {
+      engine: 'redis',
+      cacheNodeType: 'cache.t3.micro',
+      numCacheNodes: 1,
+      vpcSecurityGroupIds: [redisSecurityGroup.securityGroupId],
+      cacheSubnetGroupName: redisSubnetGroup.ref,
+    });
+
+    // Task Role
+    const taskRole = new iam.Role(this, 'AutoAuditTaskRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+    });
+
+    // Add permissions to task role as needed
+    taskRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy')
+    );
+
+    // Create Task Definition
+    const taskDefinition = new ecs.FargateTaskDefinition(this, 'AutoAuditTaskDef', {
+      memoryLimitMiB: 2048,
+      cpu: 1024,
+      taskRole,
+    });
+
+    // Add container to task definition
+    const container = taskDefinition.addContainer('AutoAuditContainer', {
+      image: ecs.ContainerImage.fromEcrRepository(repository),
+      memoryLimitMiB: 2048,
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: 'auto-audit',
+        logRetention: logs.RetentionDays.ONE_MONTH,
+      }),
+      environment: {
+        REDIS_HOST: redis.attrRedisEndpointAddress,
+        REDIS_PORT: redis.attrRedisEndpointPort,
+      },
+    });
+
+    // Add port mappings
+    container.addPortMappings(
+      {
+        containerPort: 8000,
+        protocol: ecs.Protocol.TCP,
+      },
+      {
+        containerPort: 8501,
+        protocol: ecs.Protocol.TCP,
+      }
+    );
+
+    // Create Fargate Service
+    const service = new ecs.FargateService(this, 'AutoAuditService', {
+      cluster,
+      taskDefinition,
+      desiredCount: 1,
+      assignPublicIp: false,
+      securityGroups: [
+        new ec2.SecurityGroup(this, 'ServiceSecurityGroup', {
+          vpc,
+          description: 'Security group for Auto Audit Service',
+          allowAllOutbound: true,
+        }),
+      ],
+    });
+
+    // Create ALB
+    const lb = new elbv2.ApplicationLoadBalancer(this, 'AutoAuditALB', {
+      vpc,
+      internetFacing: true,
+    });
+
+    // Create listeners and target groups for both ports
+    const apiListener = lb.addListener('ApiListener', {
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      defaultAction: elbv2.ListenerAction.fixedResponse(404),
+    });
+
+    const streamlitListener = lb.addListener('StreamlitListener', {
+      port: 8501,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      defaultAction: elbv2.ListenerAction.fixedResponse(404),
+    });
+
+    // Add target groups
+    apiListener.addTargets('ApiTarget', {
+      port: 8000,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targets: [service],
+      healthCheck: {
+        path: '/health',
+        unhealthyThresholdCount: 2,
+        healthyThresholdCount: 5,
+        interval: cdk.Duration.seconds(30),
+      },
+    });
+
+    streamlitListener.addTargets('StreamlitTarget', {
+      port: 8501,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targets: [service],
+      healthCheck: {
+        path: '/',
+        unhealthyThresholdCount: 2,
+        healthyThresholdCount: 5,
+        interval: cdk.Duration.seconds(30),
+      },
+    });
+
+    // Output the ALB DNS name
+    new cdk.CfnOutput(this, 'LoadBalancerDNS', {
+      value: lb.loadBalancerDnsName,
+    });
+
+    // Output the ECR Repository URI
+    new cdk.CfnOutput(this, 'RepositoryURI', {
+      value: repository.repositoryUri,
+    });
+  }
+} 
+

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llm import llm1, llm2, llm3, llm4, llm5, llm6, llm7, llm8, llm9, llm10, llm11, llm12
+from .llm import llm1, llm2, llm3, llm4, llm5, llm6, llm7, llm8, llm9, llm10, llm11, llm12, llm13, llm14, llm15, llm16
 from .create_agent import create_agent
 from .tools import dic2excel_tarjetas, dic2excel_transferencias, transferencia_post, tarjeta_post, factura_post, generate_textract, factura_table_post, pago_table_post, nomina_post, nomina_table_post
 from .agent_node import agent_node
@@ -35,6 +35,10 @@ __all__ = [
     "llm10",
     "llm11",
     "llm12",
+    "llm13",
+    "llm14",
+    "llm15",
+    "llm16",
     "create_agent",
     "dic2excel_tarjetas",
     "dic2excel_transferencias",

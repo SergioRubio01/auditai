@@ -1,108 +1,179 @@
-# Auditing Document Processing System
+# ICEX Payment Document Processing System
 
-A scalable document processing system for financial documents using FastAPI, PostgreSQL, and AI-powered analysis.
+![Project Logo](https://www.pdfgear.com/chat-pdf/img/best-ai-pdf-analyzers-1.png)
 
-## Features
+![Python Version](https://img.shields.io/badge/python-3.11-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Finetune](https://img.shields.io/badge/framework-unsloth-orange)
+![Agents](https://img.shields.io/badge/framework-langgraph-orange)
 
-- 🔍 Multi-document type support (Payments, Invoices, Payroll)
-- 🤖 AI-powered data extraction with vision-language models
-- 📊 Automated Excel report generation
+## Overview
+
+This project implements an advanced document processing system for ICEX payments, developed by Grant Thornton. It combines vision-language models with fine-tuning capabilities to accurately process and analyze payment documents.
+
+### Key Features
+
+- 🔍 Automated document analysis and data extraction
+- 🤖 Fine-tuned vision-language models for payment processing
+- 📊 Excel and JSON data source support
 - 🔄 PDF to PNG conversion pipeline
-- 🚀 Distributed processing with background tasks
-- 🔒 Rate limiting and security features
+- 🚀 Distributed training support on remote VMs
+- 📝 Support for multiple document types:
+  - Transferencia emitida (Bank Transfer)
+  - Detalle movimiento (Transaction Details)
+  - Solicitud de transferencia (Transfer Request)
+  - More document types coming soon!
 
-## Architecture
+## System Architecture
 
-The system consists of three main components:
+The project consists of three main components:
 
-1. **FastAPI Backend** (`/flow/backend`)
-   - RESTful API endpoints
-   - PostgreSQL database integration
-   - Background task processing
-   - Rate limiting middleware
+1. **Fine-tuning Pipeline** (`/finetune`)
+   - Model training and adaptation
+   - Document preprocessing with multi-format support
+   - Dataset management (Excel or JSON sources)
 
-2. **Streamlit Frontend** (`/flow/frontend`)
-   - Document upload interface
-   - Processing status monitoring
-   - Results visualization
-   - Excel export functionality
+2. **Inference System** (`/flow`)
+   - Multi-agent system for document processing
+   - Automated Excel output generation
+   - Batch processing capabilities
 
-3. **AI Processing Pipeline**
-   - Vision-language model integration
-   - Multi-agent workflow system
-   - Distributed task processing
+3. **Data Processing Pipeline**
+   - PDF to PNG conversion with multi-page support
+   - Flexible data source integration
+   - Automated data validation
 
-## Quick Start
+## Installation
 
-1. Clone the repository and create environment:
+### Prerequisites
+
+- Python 3.11
+- CUDA-compatible GPU (16GB+ VRAM recommended)
+- Conda package manager
+
+### Basic Setup
+
+1. Create and activate Conda environment:
 ```bash
-conda create --name icex_payments python=3.11
+conda create --name icex_payments python=3.11 pytorch-cuda=12.1 pytorch cudatoolkit ipywidgets -c pytorch -c nvidia -y
 conda activate icex_payments
+
+# Install PyTorch and torchvision first
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
-2. Install dependencies:
+2. Install Triton and Unsloth:
+```bash
+# For Windows:
+pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp311-cp311-win_amd64.whl
+pip install transformers==4.46.2
+pip install git+https://github.com/unslothai/unsloth.git
+
+# For Linux:
+pip install triton==2.1.0 transformers==4.46.2
+pip install git+https://github.com/unslothai/unsloth.git
+```
+
+3. Install additional dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Set up environment variables:
-```bash
-# .env
-OPENAI_API_KEY=your_key
-AWS_ACCESS_KEY_ID=your_aws_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret
-AWS_REGION=eu-west-1
-TEXTRACT_CONFIDENCE_THRESHOLD=0.7
-DB_URL=postgresql://user:password@localhost:5432/icex
-IMAGE_INPUT_DIR=./uploads/Images
-```
+### Configuration Setup
 
-4. Fine-tune your models:
-   - Create your own fine-tuned models using OpenAI API or other supported providers
-   - Update the model names in `flow/backend/utils/llm.py`:
+The project uses `config.py` for configuration management:
+
 ```python
-# Example for OpenAI fine-tuned models
-llm1 = ChatOpenAI(model="ft:gpt-4-vision-preview:your-org:your-model-name:version")
-llm4 = ChatOpenAI(model="ft:gpt-4:your-org:your-model-2:version")
-# ... update other model names accordingly
+# finetune/backend/config.py
+
+# VM Configuration
+VM_IP = "your_vm_ip"
+USERNAME = "your_vm_username"
+VM_PASSWORD = "your_vm_password"
+
+# Model Configuration
+MODEL_NAME = "pagos"
+LOCAL_PATH = "path/to/local/storage"
+FLAG_TESTINLOCAL = True
+FLAG_UPLOAD_DATASET = True  # Set to True to upload dataset to VM
 ```
 
-5. Run with Docker:
+### Environment Setup
+
+1. Create a `.env` file in the `finetune/backend` directory:
 ```bash
-docker-compose up --build
+# finetune/backend/.env
+HF_TOKEN=your_huggingface_token
 ```
 
-6. Start the application:
+2. Add .env to your .gitignore:
 ```bash
-python -m uvicorn flow.backend.api:app --reload --host 0.0.0.0
+# .gitignore
+.env
+*.env
 ```
 
-## API Documentation
-
-Access the interactive API documentation at:
-- OpenAPI: `http://localhost:8000/docs`
-
-## Project Structure
-
-```
-├── flow/
-│   ├── backend/
-│   │   ├── api.py          # FastAPI application
-│   │   ├── models/         # Pydantic models
-│   │   ├── routes/         # API endpoints
-│   │   └── utils/          # Helper functions
-│   └── frontend/
-│       └── app.py          # Streamlit interface
-├── docker-compose.yml
-└── requirements.txt
+3. Make sure your .env file has the correct permissions:
+```bash
+chmod 600 finetune/backend/.env  # Linux/Mac
 ```
 
-## Contributing
+## Usage
 
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+### Document Processing Pipeline
 
-## License
+1. **Prepare Documents**
+```bash
+# Process PDFs with specific document types
+python finetune/backend/pdf2png.py -c <community_name> -cn <excel_column_name> -t "Transferencia emitida" "Detalle movimiento" "Solicitud de transferencia"
+```
 
-Apache License 2.0 - See LICENSE file for details.
+2. **Create Dataset**
+```bash
+# From Excel source
+python finetune/backend/database.py -c <community_name> -t excel -e <excel_filename> -s1 <sheet1_name> -s2 <sheet2_name>
+
+# From JSON source
+python finetune/backend/database.py -c <community_name> -t json -j <json_folder>
+```
+
+3. **Run Inference**
+```bash
+# Clone repository
+git clone https://github.com/SergioRubio01/AutoAudit
+cd AutoAudit
+
+# Set up environment
+poetry install
+poetry shell
+
+# Configure environment
+cp .env.example .env  # Edit with your settings
+
+# Initialize database
+poetry run alembic upgrade head
+
+# Start development server
+poetry run uvicorn main:app
+```
+
+Visit `http://localhost:8000` for the web interface.
+
+
+## 📚 Documentation
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [API Documentation](http://localhost:8000/docs)
+- [Development Plan](development_plan.md)
+- [Public Python SDK](https://github.com/SergioRubio01/autoaudit-sdk-python)
+
+
+## 📄 License
+
+Proprietary - See [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+Made with ❤️ by the AutoAudit Team
+</div>

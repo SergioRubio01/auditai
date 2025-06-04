@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # Backend service running the FastAPI server with GPU support
+  backend:
+    build:
+      # Change context to parent directory to access all files
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      # Map container port 8000 to host port 8000
+      - "8000:8000"
+    volumes:
+      # Mount backend code for development
+      - ./backend:/app/backend
+      # Mount HuggingFace cache to persist downloaded models
+      - model_cache:/root/.cache/huggingface
+
+    environment:
+      # Specify GPU device to use
+      - CUDA_VISIBLE_DEVICES=0
+      # Add PYTHONPATH to include backend directory
+      - PYTHONPATH=/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            # Reserve one NVIDIA GPU for the container
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Frontend service running the Streamlit application
+  frontend:
+    build:
+      # Change context to parent directory to access all files
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      # Map container port 8501 to host port 8501
+      - "8501:8501"
+    volumes:
+      # Mount frontend code for development
+      - ./frontend:/app/frontend
+
+      # Mount backend code for development
+      - ./backend:/app/backend
+    environment:
+      # Configure backend URL for API requests
+      - BACKEND_URL=http://backend:8000
+      # Add PYTHONPATH to include backend directory
+      - PYTHONPATH=/app
+    depends_on:
+      # Ensure backend starts before frontend
+      - backend
+
+# Named volumes
+volumes:
+  # Volume to persist HuggingFace model cache
+  model_cache:
