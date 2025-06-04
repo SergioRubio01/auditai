@@ -1,0 +1,316 @@
+version: '3.9'
+
+# Production-optimized Docker Compose configuration
+# Usage: docker-compose -f docker-compose.prod.yml up -d
+
+x-common-variables: &common-variables
+  PYTHONUNBUFFERED: 1
+  PYTHONDONTWRITEBYTECODE: 1
+  REDIS_URL: redis://redis:6379/0
+  NODE_ENV: production
+  
+x-app-environment: &app-environment
+  <<: *common-variables
+  SERVER_URL: ${SERVER_URL:-https://api.autoaudit.com}
+  IMAGE_INPUT_DIR: /app/uploads/Images
+  DB_PATH: /app/database/database.db
+  WANDB_API_KEY: ${WANDB_API_KEY}
+  LOG_LEVEL: ${LOG_LEVEL:-WARNING}
+  WORKERS_COUNT: ${WORKERS_COUNT:-8}
+  MAX_CONCURRENT_WORKFLOWS: ${MAX_CONCURRENT_WORKFLOWS:-20}
+  SENTRY_DSN: ${SENTRY_DSN}
+  ENABLE_METRICS: "true"
+
+services:
+  # Redis cluster for high availability
+  redis:
+    image: redis:7-alpine
+    container_name: autoaudit_redis
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --tcp-backlog 511
+      --timeout 0
+      --tcp-keepalive 300
+    volumes:
+      - redis_data:/data
+      - ./infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # PostgreSQL with replication support
+  postgres:
+    image: postgres:15-alpine
+    container_name: autoaudit_postgres
+    environment:
+      POSTGRES_DB: autoaudit
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_SHARED_PRELOAD_LIBRARIES: pg_stat_statements
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # Main application - multiple instances for load balancing
+  app:
+    image: ${DOCKER_REGISTRY}/autoaudit:${VERSION:-latest}
+    environment:
+      <<: *app-environment
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/autoaudit
+      INSTANCE_ID: "{{.Task.Slot}}"
+    volumes:
+      - app_uploads:/app/uploads
+      - app_logs:/app/logs
+      - app_cache:/app/cache
+      - wandb:/home/autoaudit/.wandb
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 30s
+        failure_action: rollback
+      restart_policy:
+        condition: any
+        delay: 10s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service=app"
+
+  # Nginx load balancer with SSL termination
+  nginx:
+    image: nginx:alpine
+    container_name: autoaudit_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+      - nginx_cache:/var/cache/nginx
+      - ./infrastructure/ssl:/etc/nginx/ssl:ro
+      - ./infrastructure/nginx/maintenance.html:/usr/share/nginx/html/maintenance.html:ro
+    depends_on:
+      - app
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: autoaudit_prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: autoaudit_grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=redis-datasource,postgres-datasource
+      - GF_SERVER_ROOT_URL=https://metrics.autoaudit.com
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/monitoring/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infrastructure/monitoring/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Loki for log aggregation
+  loki:
+    image: grafana/loki:latest
+    container_name: autoaudit_loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./infrastructure/monitoring/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  # Promtail for log shipping
+  promtail:
+    image: grafana/promtail:latest
+    container_name: autoaudit_promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infrastructure/monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+      - app_logs:/app/logs:ro
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Backup service
+  backup:
+    image: postgres:15-alpine
+    container_name: autoaudit_backup
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+      - ./infrastructure/scripts/backup.sh:/backup.sh:ro
+    command: /bin/sh -c "chmod +x /backup.sh && crond -f -d 8"
+    networks:
+      - autoaudit-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  app_uploads:
+    driver: local
+  app_logs:
+    driver: local
+  app_cache:
+    driver: local
+  wandb:
+    driver: local
+  nginx_cache:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+
+networks:
+  autoaudit-network:
+    driver: overlay
+    attachable: true
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24

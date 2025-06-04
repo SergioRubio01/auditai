@@ -1,0 +1,406 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: autoaudit
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: autoaudit-config
+  namespace: autoaudit
+data:
+  SERVER_URL: "https://api.autoaudit.com"
+  IMAGE_INPUT_DIR: "/app/uploads/Images"
+  DB_PATH: "/app/database/database.db"
+  LOG_LEVEL: "INFO"
+  WORKERS_COUNT: "8"
+  MAX_CONCURRENT_WORKFLOWS: "20"
+  REDIS_URL: "redis://redis-service:6379/0"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: autoaudit-secrets
+  namespace: autoaudit
+type: Opaque
+stringData:
+  POSTGRES_USER: "autoaudit"
+  POSTGRES_PASSWORD: "changeme"
+  WANDB_API_KEY: "your-wandb-key"
+  GRAFANA_PASSWORD: "admin"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoaudit-app
+  namespace: autoaudit
+  labels:
+    app: autoaudit
+    component: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: autoaudit
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: autoaudit
+        component: backend
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: autoaudit
+        image: autoaudit:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: api
+        - containerPort: 8501
+          name: frontend
+        envFrom:
+        - configMapRef:
+            name: autoaudit-config
+        - secretRef:
+            name: autoaudit-secrets
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-service:5432/autoaudit"
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: uploads
+          mountPath: /app/uploads
+        - name: cache
+          mountPath: /app/cache
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: uploads
+        persistentVolumeClaim:
+          claimName: uploads-pvc
+      - name: cache
+        emptyDir:
+          sizeLimit: 2Gi
+      - name: logs
+        persistentVolumeClaim:
+          claimName: logs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autoaudit-service
+  namespace: autoaudit
+  labels:
+    app: autoaudit
+spec:
+  type: ClusterIP
+  selector:
+    app: autoaudit
+    component: backend
+  ports:
+  - name: api
+    port: 8000
+    targetPort: api
+    protocol: TCP
+  - name: frontend
+    port: 8501
+    targetPort: frontend
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: autoaudit
+spec:
+  serviceName: postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_DB
+          value: "autoaudit"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: autoaudit-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: autoaudit-secrets
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U $POSTGRES_USER
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U $POSTGRES_USER
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: autoaudit
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: autoaudit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        command:
+        - redis-server
+        - --appendonly
+        - "yes"
+        - --maxmemory
+        - "1gb"
+        - --maxmemory-policy
+        - "allkeys-lru"
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: redis-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: autoaudit
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: redis
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc
+  namespace: autoaudit
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logs-pvc
+  namespace: autoaudit
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: autoaudit
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: autoaudit-ingress
+  namespace: autoaudit
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/rate-limit: "50"
+spec:
+  tls:
+  - hosts:
+    - api.autoaudit.com
+    - app.autoaudit.com
+    secretName: autoaudit-tls
+  rules:
+  - host: api.autoaudit.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: autoaudit-service
+            port:
+              number: 8000
+  - host: app.autoaudit.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: autoaudit-service
+            port:
+              number: 8501
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: autoaudit-hpa
+  namespace: autoaudit
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: autoaudit-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
