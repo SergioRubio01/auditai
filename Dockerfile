@@ -30,13 +30,12 @@ FROM python:${PYTHON_VERSION}-slim AS system-deps
 
 # Install runtime dependencies with specific versions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    poppler-utils=22.12.0-2+b1 \
+    poppler-utils \
     libgomp1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender-dev \
-    libgomp1 \
     wget \
     curl \
     dos2unix \

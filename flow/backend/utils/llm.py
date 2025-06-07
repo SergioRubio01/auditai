@@ -13,12 +13,11 @@
 # limitations under the License.
 
 from langchain_openai import ChatOpenAI
-from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from ..models import DocType, Transferencia, FacturaRow, TablaFacturas, TarjetaRow, TablaTarjetas, NominaRow, TablaNominas
 
 llm1 = ChatOpenAI(model="ft:gpt-4o-2024-08-06:personal:pagosicex-v1:AjJ3NLgw")
-llm2 = ChatGroq(model="llama3.2-11b-vision-preview")
+llm2 = ChatOpenAI(model="gpt-4o-mini")  # Replaced Groq
 llm3 = ChatOllama(model="llama3.1").with_structured_output(TablaNominas, method='json_schema')
 llm4 = ChatOpenAI(model="gpt-4o-mini").with_structured_output(TablaNominas)
 llm5 = ChatOpenAI(model="ft:gpt-4o-2024-08-06:personal:pagosicex-v4-1:AnS20f6p").with_structured_output(DocType)
@@ -31,5 +30,5 @@ llm11 = ChatOpenAI(model="gpt-4o-mini").with_structured_output(TablaFacturas)
 llm12 = ChatOpenAI(model="gpt-4o-mini").with_structured_output(TablaTarjetas)
 llm13 = ChatOpenAI(model="ft:gpt-4o-2024-08-06:personal:cruzroja-v1:Av6Z9gQN").with_structured_output(NominaRow)
 llm14 = ChatOpenAI(model="ft:gpt-4o-2024-08-06:personal:cruzroja-v1:Av6Z9gQN").with_structured_output(TablaNominas)
-llm15 = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).with_structured_output(TablaNominas)
+llm15 = ChatOpenAI(model="gpt-4o-mini").with_structured_output(TablaNominas)  # Replaced Groq
 llm16 = ChatOpenAI(model="ft:gpt-4o-2024-08-06:personal::B4nRTybD", max_completion_tokens=10000, temperature=0).with_structured_output(NominaRow)

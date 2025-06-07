@@ -31,7 +31,7 @@ st.config.set_option('server.maxMessageSize', 1000)
 # Constants
 API_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg']
-LOCAL_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pdf_history.db')
+LOCAL_DB_PATH = os.path.join('/app/database', 'pdf_history.db')
 
 def init_local_db():
     """Initialize local SQLite database for PDF conversion history"""

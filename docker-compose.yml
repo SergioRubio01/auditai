@@ -25,7 +25,6 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-      - ./infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -34,56 +33,14 @@ services:
     networks:
       - autoaudit-network
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
 
-  # PostgreSQL for enhanced data persistence (optional, for production)
-  postgres:
-    image: postgres:15-alpine
-    container_name: autoaudit_postgres
-    environment:
-      POSTGRES_DB: autoaudit
-      POSTGRES_USER: ${POSTGRES_USER:-autoaudit}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autoaudit}
-      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autoaudit}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - autoaudit-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-
-  # Main application with enhanced configuration
+  # Main application with backend and frontend
   app:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         PYTHON_VERSION: "3.11"
-      cache_from:
-        - type=registry,ref=autoaudit:latest
-        - type=registry,ref=autoaudit:cache
     image: autoaudit:latest
     container_name: autoaudit_app
     ports:
@@ -93,7 +50,6 @@ services:
       - .env
     environment:
       <<: *app-environment
-      DATABASE_URL: postgresql://${POSTGRES_USER:-autoaudit}:${POSTGRES_PASSWORD:-autoaudit}@postgres:5432/autoaudit
     volumes:
       - ./uploads:/app/uploads
       - ./database:/app/database
@@ -105,8 +61,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -116,121 +70,13 @@ services:
     networks:
       - autoaudit-network
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4G
-        reservations:
-          cpus: '1'
-          memory: 2G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    # Development mode configuration
-    develop:
-      watch:
-        - action: sync
-          path: ./flow
-          target: /app/flow
-        - action: rebuild
-          path: ./requirements.txt
-        - action: sync+restart
-          path: ./flow/backend
-          target: /app/flow/backend
-
-  # Nginx reverse proxy for better performance
-  nginx:
-    image: nginx:alpine
-    container_name: autoaudit_nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
-      - nginx_cache:/var/cache/nginx
-      - ./infrastructure/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - app
-    networks:
-      - autoaudit-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-
-  # Prometheus for metrics collection
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: autoaudit_prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    networks:
-      - autoaudit-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-
-  # Grafana for monitoring dashboards
-  grafana:
-    image: grafana/grafana:latest
-    container_name: autoaudit_grafana
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./infrastructure/monitoring/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./infrastructure/monitoring/datasources:/etc/grafana/provisioning/datasources:ro
-    depends_on:
-      - prometheus
-    networks:
-      - autoaudit-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
 
 volumes:
   redis_data:
     driver: local
-  postgres_data:
-    driver: local
   wandb:
-    driver: local
-  nginx_cache:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
     driver: local
 
 networks:
   autoaudit-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16

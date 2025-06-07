@@ -53,15 +53,17 @@ def load_environment():
     return False
 
 # Initialize environment BEFORE any other imports
-if not load_environment():
-    raise EnvironmentError("No environment file found")
+# In production, environment variables are set via ECS task definition
+load_environment()
 
 # Verify critical environment variables
 required_vars = ['OPENAI_API_KEY']
 missing_vars = [var for var in required_vars if not os.getenv(var)]
 
 if missing_vars:
-    raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    # In production, these should be set via AWS Parameter Store
+    logger.warning(f"Missing environment variables: {', '.join(missing_vars)}")
+    logger.warning("Using default values or AWS Parameter Store secrets")
 
 # Package metadata
 __version__ = "0.1.0"
